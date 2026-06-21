@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package insta360.messages;
+
+import "media.proto";
+
+message GetFileList {
+  MediaType media_type = 1;
+  uint32 start = 2;
+  uint32 limit = 3;
+}
+
+message GetFileListResp {
+  repeated string uri = 1;
+  uint32 total_count = 2;
+}

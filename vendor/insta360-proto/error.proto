@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package insta360.messages;
+
+message Error {
+  enum ErrorCode {
+    UNKNOWN = 0;
+  }
+  ErrorCode code = 1;
+  string message = 2;
+}

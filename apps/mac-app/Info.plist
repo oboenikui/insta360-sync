@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>Insta360Sync</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.oboenikui.insta360-sync</string>
+    <key>CFBundleName</key>
+    <string>Insta360 Sync</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSLocationUsageDescription</key>
+    <string>Insta360 Sync は Insta360 カメラの Wi-Fi（SSID）を検知するために、位置情報へのアクセスが必要です。撮影位置の記録は行いません。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Insta360 Sync は Insta360 カメラの Wi-Fi（SSID）を検知するために、位置情報へのアクセスが必要です。撮影位置の記録は行いません。</string>
+</dict>
+</plist>

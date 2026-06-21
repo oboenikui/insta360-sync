@@ -1,0 +1,11 @@
+.DS_Store
+.build/
+*.xcodeproj
+DerivedData/
+apps/mac-app/.build/
+apps/pwa/node_modules/
+apps/pwa/dist/
+apps/pwa/build/
+*.pem
+*.p12
+.vapid-keys.json
