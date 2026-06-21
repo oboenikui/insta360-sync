@@ -13,6 +13,7 @@ let package = Package(
             path: "Sources/Insta360Sync",
             resources: [
                 .process("Resources/public"),
+                .copy("Resources/ucd2"),
             ],
             linkerSettings: [
                 .linkedFramework("CoreWLAN"),

@@ -17,6 +17,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$MAC_APP/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/public" "$APP_BUNDLE/Contents/Resources/public"
+cp -R "$MAC_APP/Sources/Insta360Sync/Resources/ucd2" "$APP_BUNDLE/Contents/Resources/ucd2"
 
 # 位置情報など TCC ダイアログ表示には .app への署名が必要
 if codesign --force --deep --sign - --timestamp=none "$APP_BUNDLE" 2>/dev/null; then
