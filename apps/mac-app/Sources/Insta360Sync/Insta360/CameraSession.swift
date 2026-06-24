@@ -57,51 +57,85 @@ struct CameraSession: Sendable {
 }
 
 final class FileDownloader: Sendable {
-    func remoteExists(at sourceURL: URL) async -> Bool {
-        var request = URLRequest(url: sourceURL, timeoutInterval: 15)
-        request.httpMethod = "HEAD"
-        request.setValue("Lavf/60.3.100", forHTTPHeaderField: "User-Agent")
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
-        request.setValue("close", forHTTPHeaderField: "Connection")
-        do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else { return false }
-            return http.statusCode == 200 || http.statusCode == 206
-        } catch {
-            return false
-        }
-    }
+    private static let userAgent = "Lavf/60.3.100"
 
-    func download(from sourceURL: URL, to destinationURL: URL) async throws -> Int64 {
+    func download(
+        file: Insta360CameraFile,
+        to destinationURL: URL,
+        protocolKind: CameraProtocolKind
+    ) async throws -> Int64 {
         let fm = FileManager.default
         try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: destinationURL.path) {
             return fm.fileSize(at: destinationURL) ?? 0
         }
 
-        var request = URLRequest(url: sourceURL, timeoutInterval: 300)
-        request.httpMethod = "GET"
-        request.setValue("Lavf/60.3.100", forHTTPHeaderField: "User-Agent")
-        request.setValue("*/*", forHTTPHeaderField: "Accept")
-        request.setValue("bytes=0-", forHTTPHeaderField: "Range")
-        request.setValue("close", forHTTPHeaderField: "Connection")
-        request.setValue("1", forHTTPHeaderField: "Icy-MetaData")
-        let (tempURL, response) = try await URLSession.shared.download(for: request)
-        guard let http = response as? HTTPURLResponse,
-              http.statusCode == 200 || http.statusCode == 206 else {
-            throw FileDownloadError.httpFailure
+        var lastError: Error = FileDownloadError.httpFailure
+        for useRange in [true, false] {
+            var request = URLRequest(url: file.downloadURL, timeoutInterval: 300)
+            request.httpMethod = "GET"
+            request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+            request.setValue("*/*", forHTTPHeaderField: "Accept")
+            request.setValue("close", forHTTPHeaderField: "Connection")
+            request.setValue("1", forHTTPHeaderField: "Icy-MetaData")
+            if useRange {
+                request.setValue("bytes=0-", forHTTPHeaderField: "Range")
+            }
+
+            do {
+                let (tempURL, response) = try await URLSession.shared.download(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw FileDownloadError.httpFailure
+                }
+                guard http.statusCode == 200 || http.statusCode == 206 else {
+                    throw FileDownloadError.httpStatus(http.statusCode)
+                }
+                if fm.fileExists(atPath: destinationURL.path) {
+                    try? fm.removeItem(at: tempURL)
+                    return fm.fileSize(at: destinationURL) ?? 0
+                }
+                try fm.moveItem(at: tempURL, to: destinationURL)
+                return fm.fileSize(at: destinationURL) ?? 0
+            } catch let error as FileDownloadError {
+                switch error {
+                case .httpStatus(let code) where useRange && (code == 405 || code == 416):
+                    lastError = error
+                    continue
+                case .httpStatus(401) where protocolKind == .ucd2:
+                    throw Insta360ClientError.cameraError(
+                        "HTTP 401: \(file.displayName) — UCD2 セッションが切れている可能性があります。"
+                    )
+                case .httpStatus(404) where file.storage == "internal":
+                    throw Insta360ClientError.cameraError(
+                        "HTTP 404: \(file.displayName) — 本体ストレージのパスが不正な可能性があります。 (\(file.sourcePath))"
+                    )
+                case .httpStatus(let code):
+                    throw Insta360ClientError.cameraError("HTTP \(code): \(file.displayName)")
+                case .httpFailure:
+                    if useRange {
+                        lastError = error
+                        continue
+                    }
+                    throw error
+                }
+            } catch {
+                lastError = error
+                if useRange {
+                    continue
+                }
+                throw Insta360ClientError.cameraError("保存失敗 (\(file.localName)): \(error.localizedDescription)")
+            }
         }
-        if fm.fileExists(atPath: destinationURL.path) {
-            try? fm.removeItem(at: tempURL)
-            return fm.fileSize(at: destinationURL) ?? 0
-        }
-        try fm.moveItem(at: tempURL, to: destinationURL)
-        return fm.fileSize(at: destinationURL) ?? 0
+
+        throw Insta360ClientError.cameraError(
+            "ダウンロード失敗 (\(file.displayName)): \(lastError.localizedDescription)"
+        )
     }
 }
 
 enum FileDownloadError: Error {
     case httpFailure
+    case httpStatus(Int)
 }
 
 extension FileManager {

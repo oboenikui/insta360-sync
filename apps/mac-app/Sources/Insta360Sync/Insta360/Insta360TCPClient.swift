@@ -30,6 +30,36 @@ struct Insta360CameraFile: Sendable {
     var downloadURL: URL
     var size: Int64?
     var createdAt: Date?
+    var name: String
+    var storage: String
+
+    init(
+        sourcePath: String,
+        downloadURL: URL,
+        size: Int64? = nil,
+        createdAt: Date? = nil,
+        name: String = "",
+        storage: String = "sd"
+    ) {
+        self.sourcePath = sourcePath
+        self.downloadURL = downloadURL
+        self.size = size
+        self.createdAt = createdAt
+        self.name = name.isEmpty ? (sourcePath as NSString).lastPathComponent : name
+        if storage == "sd", sourcePath.hasPrefix("/storage_") {
+            self.storage = Insta360Paths.storageFromPath(sourcePath)
+        } else {
+            self.storage = storage
+        }
+    }
+
+    var localName: String {
+        Insta360Paths.localFilename(name: name, storage: storage)
+    }
+
+    var displayName: String {
+        "[\(Insta360Paths.displayLabel(storage: storage))] \(name)"
+    }
 }
 
 final class Insta360TCPClient: @unchecked Sendable {
@@ -106,11 +136,18 @@ final class Insta360TCPClient: @unchecked Sendable {
         } while true
 
         return allURIs.map { uri in
-            Insta360CameraFile(
+            let name = (uri as NSString).lastPathComponent
+            return Insta360CameraFile(
                 sourcePath: uri,
-                downloadURL: URL(string: "http://\(Insta360Defaults.cameraHost):\(Insta360Defaults.cameraHTTPPort)\(uri)")!,
+                downloadURL: Insta360Paths.buildDownloadURL(
+                    host: Insta360Defaults.cameraHost,
+                    httpPort: Insta360Defaults.cameraHTTPPort,
+                    sourcePath: uri
+                ),
                 size: nil,
-                createdAt: BackupPathResolver.parseCreationDate(fromFilename: (uri as NSString).lastPathComponent)
+                createdAt: BackupPathResolver.parseCreationDate(fromFilename: name),
+                name: name,
+                storage: Insta360Paths.storageFromPath(uri)
             )
         }
     }

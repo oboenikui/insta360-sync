@@ -54,12 +54,15 @@ final class Insta360OSCClient: Sendable {
                 let size = (entry["size"] as? NSNumber)?.int64Value
                 let createdAt = parseOSCTimestamp(entry["dateTimeZone"] as? String)
                     ?? BackupPathResolver.parseCreationDate(fromFilename: name)
+                let sourcePath = localPath.hasPrefix("/") ? localPath : "/\(localPath)"
                 files.append(
                     Insta360CameraFile(
-                        sourcePath: localPath.hasPrefix("/") ? localPath : "/\(localPath)",
+                        sourcePath: sourcePath,
                         downloadURL: downloadURL,
                         size: size,
-                        createdAt: createdAt
+                        createdAt: createdAt,
+                        name: name,
+                        storage: Insta360Paths.storageFromPath(sourcePath)
                     )
                 )
             }

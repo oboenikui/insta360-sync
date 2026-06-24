@@ -76,7 +76,11 @@ final class BackupEngine: @unchecked Sendable {
             }
 
             do {
-                _ = try await downloader.download(from: file.downloadURL, to: destination)
+                _ = try await downloader.download(
+                    file: file,
+                    to: destination,
+                    protocolKind: session.kind
+                )
                 copied += 1
             } catch {
                 failed += 1
