@@ -98,6 +98,16 @@ final class BackupEngine: @unchecked Sendable {
             )
         )
 
+        progress(
+            BackupProgress(
+                cameraName: camera.displayName,
+                completed: files.count,
+                total: files.count,
+                currentFile: nil,
+                phase: "Disconnecting"
+            )
+        )
+
         return BackupResult(
             copiedCount: copied,
             skippedCount: skipped,

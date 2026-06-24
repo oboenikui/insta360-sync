@@ -250,6 +250,7 @@ def main() -> int:
         return 130
     finally:
         session.close()
+        print("カメラ接続を切断しました。", file=sys.stderr)
     return 0
 
 

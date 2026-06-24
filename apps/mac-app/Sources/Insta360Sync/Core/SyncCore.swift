@@ -16,8 +16,6 @@ final class SyncCore {
     private let webPush = WebPushService()
     private var httpsServer: HTTPServer?
     private var backupTask: Task<Void, Never>?
-    private var previousSSID: String?
-    private var previousPassword: String?
 
     var appStatusLabel: String {
         switch appStatus {
@@ -121,8 +119,10 @@ final class SyncCore {
 
     private func runBackup(for camera: CameraProfile, pendingID: UUID) async {
         pendingStore.update(pendingID, status: .running)
-        previousSSID = wifiMonitor.currentSSID()
-        previousPassword = nil
+        let previousSSID = wifiMonitor.currentSSID()
+        if let previousSSID, previousSSID != camera.ssid {
+            wifiMonitor.rememberNonCameraNetwork(previousSSID)
+        }
 
         let startedAt = Date()
         var result: BackupResult?
@@ -130,7 +130,7 @@ final class SyncCore {
         let backupSettings = settings
 
         do {
-            try await wifiMonitor.connect(to: camera)
+            try await wifiMonitor.connectIfNeeded(to: camera)
             result = try await backupEngine.runBackup(camera: camera, settings: backupSettings) { [weak self] progress in
                 Task { @MainActor [weak self] in
                     self?.currentProgress = progress
@@ -141,7 +141,7 @@ final class SyncCore {
             AppLogger.shared.error("Backup failed: \(error.localizedDescription)")
         }
 
-        await wifiMonitor.reconnect(to: previousSSID, password: previousPassword)
+        await wifiMonitor.finishCameraSession(previousSSID: previousSSID, cameraSSID: camera.ssid)
         currentProgress = nil
 
         if let result {
