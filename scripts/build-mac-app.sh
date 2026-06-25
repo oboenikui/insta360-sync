@@ -19,11 +19,5 @@ cp "$MAC_APP/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/public" "$APP_BUNDLE/Contents/Resources/public"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/ucd2" "$APP_BUNDLE/Contents/Resources/ucd2"
 
-# 位置情報など TCC ダイアログ表示には .app への署名が必要
-if codesign --force --deep --sign - --timestamp=none "$APP_BUNDLE" 2>/dev/null; then
-  echo "Signed $APP_BUNDLE (ad-hoc)"
-else
-  echo "warning: codesign failed; location permission dialog may not appear" >&2
-fi
-
 echo "Built $APP_BUNDLE"
+echo "For stable TCC permissions (Location), run: make mac-app-signed"
