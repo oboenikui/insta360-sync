@@ -131,8 +131,8 @@ final class AppSettings: @unchecked Sendable {
 
     /// iPhone からアクセスするときの URL 例（ホスト名は環境により異なる）。
     var pwaAccessURLDescription: String {
-        let host = Host.current().localizedName ?? "your-mac.local"
-        return "https://\(host.localizedLowercase):\(httpsPort)/"
+        let host = TLSCertificateEndpoints.current().commonName
+        return "https://\(host):\(httpsPort)/"
     }
 
     private func persistCameras() {
