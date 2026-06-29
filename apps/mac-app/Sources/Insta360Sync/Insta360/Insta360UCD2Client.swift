@@ -49,31 +49,53 @@ final class Insta360UCD2Client: @unchecked Sendable {
     }
 
     func listAllFiles() async throws -> [Insta360CameraFile] {
-        try await sendReplay()
+        let handshakeStarted = Date()
+        let totalWait: TimeInterval = 30
+        let deadline = handshakeStarted.addingTimeInterval(totalWait)
 
-        let deadline = Date().addingTimeInterval(15)
-        var bestEntries: [MediaFileEntry] = []
+        let handshakeTask = Task {
+            try await self.sendPhasedReplay()
+        }
+
+        var bestPaths: [String] = []
         var lastCount = 0
         var stableSince: Date?
         while Date() < deadline {
-            let current = Insta360MediaProto.parseMediaFileEntries(from: receiveBuffer)
+            let current = Insta360Paths.parseMediaPaths(from: receiveBuffer)
             if current.count > lastCount {
-                bestEntries = current
+                bestPaths = current
                 lastCount = current.count
                 stableSince = Date()
-            } else if !bestEntries.isEmpty, let stableSince, Date().timeIntervalSince(stableSince) >= 1.0 {
-                break
+            } else if !bestPaths.isEmpty, let since = stableSince {
+                let elapsed = Date().timeIntervalSince(handshakeStarted)
+                let (sdJpg, sdDng) = Self.countSDRaw(paths: bestPaths)
+                let waitingForSDDng = sdJpg > 0 && sdDng == 0
+                if elapsed < 10 || waitingForSDDng {
+                    if Date().timeIntervalSince(since) >= 2.0 {
+                        stableSince = Date()
+                    }
+                } else if Date().timeIntervalSince(since) >= 2.0 {
+                    break
+                }
             }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        guard !bestEntries.isEmpty else {
+        do {
+            try await handshakeTask.value
+        } catch {
+            handshakeTask.cancel()
+            throw error
+        }
+
+        let entries = Insta360MediaProto.parseMediaFileEntries(from: receiveBuffer)
+        guard !entries.isEmpty else {
             throw Insta360ClientError.cameraError(
                 "UCD2 file list timed out (received \(receiveBuffer.count) bytes)"
             )
         }
 
-        return bestEntries.map { entry in
+        let files = entries.map { entry in
             let name = (entry.sourcePath as NSString).lastPathComponent
             return Insta360CameraFile(
                 sourcePath: entry.sourcePath,
@@ -89,9 +111,15 @@ final class Insta360UCD2Client: @unchecked Sendable {
                 captureTime: entry.captureTime
             )
         }
+
+        return Insta360Paths.inferCompanionDNGFiles(
+            files,
+            host: hostString,
+            httpPort: Insta360Defaults.cameraHTTPPort
+        )
     }
 
-    private func sendReplay() async throws {
+    private func sendPhasedReplay() async throws {
         guard let sync = Self.loadResource("sync", ext: "bin") else {
             throw Insta360ClientError.unsupported
         }
@@ -100,11 +128,102 @@ final class Insta360UCD2Client: @unchecked Sendable {
         }
         try await send(sync)
         try await Task.sleep(for: .milliseconds(50))
-        // handshake.bin omits cmd 0x0202 (phone time / Asia/Tokyo) to avoid shifting camera clock.
-        for packet in Self.splitUCD2Packets(handshake) {
-            try await send(packet)
-            try await Task.sleep(for: .milliseconds(20))
+
+        for (phaseIndex, phase) in Self.handshakePhases(from: handshake).enumerated() {
+            for packet in phase.packets {
+                try await send(packet)
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            if phase.delayAfter > 0 {
+                let waitStarted = Date()
+                if phaseIndex == 0 {
+                    _ = await waitForCameraCommand(0x1002, timeout: min(phase.delayAfter, 2.0))
+                }
+                let remaining = max(0, phase.delayAfter - Date().timeIntervalSince(waitStarted))
+                if remaining > 0 {
+                    try await Task.sleep(for: .seconds(remaining))
+                }
+            }
         }
+    }
+
+    private func waitForCameraCommand(_ command: UInt16, timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if Self.cameraCommands(in: receiveBuffer).contains(command) {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+
+    private static func handshakePhases(from handshake: Data) -> [HandshakePhase] {
+        let packets = splitUCD2Packets(handshake)
+        let upperBounds: [UInt16] = [0x1002, 0x1502, 0x1802, 0x1b02, 0x1d02, 0x2a02]
+        let delays: [TimeInterval] = [0.70, 0.15, 0.60, 3.00, 4.50, 0.0]
+        var phases: [HandshakePhase] = []
+        var remaining = packets
+        for (index, bound) in upperBounds.enumerated() {
+            var batch: [Data] = []
+            var next: [Data] = []
+            var capturing = true
+            for packet in remaining {
+                if capturing {
+                    batch.append(packet)
+                    if ucd2Command(from: packet) == bound {
+                        capturing = false
+                    }
+                } else {
+                    next.append(packet)
+                }
+            }
+            remaining = next
+            if !batch.isEmpty {
+                phases.append(HandshakePhase(packets: batch, delayAfter: delays[index]))
+            }
+        }
+        if !remaining.isEmpty {
+            phases.append(HandshakePhase(packets: remaining, delayAfter: 0))
+        }
+        return phases
+    }
+
+    private static func countSDRaw(paths: [String]) -> (jpg: Int, dng: Int) {
+        var jpg = 0
+        var dng = 0
+        for path in paths {
+            guard Insta360Paths.storageFromPath(path) == "sd" else { continue }
+            let lower = path.lowercased()
+            if lower.hasSuffix(".jpg") { jpg += 1 }
+            else if lower.hasSuffix(".dng") { dng += 1 }
+        }
+        return (jpg, dng)
+    }
+
+    private static func cameraCommands(in stream: Data) -> Set<UInt16> {
+        var commands = Set<UInt16>()
+        for packet in splitUCD2Packets(stream) {
+            if let command = ucd2Command(from: packet) {
+                commands.insert(command)
+            }
+        }
+        return commands
+    }
+
+    private static func ucd2Command(from packet: Data) -> UInt16? {
+        guard packet.count >= 16 else { return nil }
+        let bytes = [UInt8](packet)
+        guard bytes[0] == 0x55, bytes[1] == 0x43, bytes[2] == 0x44, bytes[3] == 0x32 else {
+            return nil
+        }
+        guard bytes[5] == 0x0C, bytes[6] == 0x04 else { return nil }
+        return UInt16(bytes[14]) | (UInt16(bytes[15]) << 8)
+    }
+
+    private struct HandshakePhase {
+        var packets: [Data]
+        var delayAfter: TimeInterval
     }
 
     private static func splitUCD2Packets(_ stream: Data) -> [Data] {

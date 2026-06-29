@@ -36,6 +36,36 @@ def build_handshake_segments(*, skip_time_sync: bool = True) -> list[bytes]:
     return segments
 
 
+def build_list_file_phases(*, skip_time_sync: bool = True) -> list[tuple[list[bytes], float]]:
+    """Return handshake packets in phases with post-phase delays (from iPhone pcap).
+
+    DNG paths arrive in a second burst after cmd 0x1502; blasting all continuation
+    packets at once often leaves clients with JPG-only lists.
+    """
+    initial: list[bytes] = []
+    for packet in _CAPTURED_SEGMENTS:
+        if skip_time_sync and ucd2_cmd(packet) == TIME_SYNC_CMD:
+            continue
+        initial.append(packet)
+
+    continuation = list(FILE_LIST_CONTINUATION_SEGMENTS)
+    groups = [
+        initial,
+        continuation[0:5],   # 0x1102 .. 0x1502
+        continuation[5:8],   # 0x1602 .. 0x1802
+        continuation[8:11],  # 0x1902 .. 0x1b02
+        continuation[11:13],  # 0x1c02 .. 0x1d02
+        continuation[13:],    # 0x1e02 .. 0x2a02
+    ]
+    delays = [0.70, 0.15, 0.60, 3.00, 4.50, 0.0]
+    phases: list[tuple[list[bytes], float]] = []
+    for index, (group, delay) in enumerate(zip(groups, delays)):
+        packets = expand_ucd2_packets(group)
+        if packets:
+            phases.append((packets, delay if index < len(delays) else 0.0))
+    return phases
+
+
 def handshake_blob(segments: Iterable[bytes] | None = None) -> bytes:
     return b"".join(expand_ucd2_packets(segments or build_handshake_segments()))
 

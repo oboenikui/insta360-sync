@@ -113,7 +113,10 @@ def _meta_at_path(data: bytes, path_offset: int, path_len: int) -> tuple[int | N
         except ValueError:
             continue
         if str_start == path_offset and str_len == path_len:
-            return _parse_file_entry(data[tag_pos:])
+            try:
+                return _parse_file_entry(data[tag_pos:])
+            except ValueError:
+                return None, None
     return None, None
 
 

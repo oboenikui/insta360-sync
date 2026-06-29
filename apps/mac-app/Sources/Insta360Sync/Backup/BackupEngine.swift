@@ -98,6 +98,50 @@ final class BackupEngine: @unchecked Sendable {
                 )
                 SyncManifestStore.markSynced(file, manifest: &manifest)
                 copied += 1
+
+                if file.storage == "sd",
+                   file.name.lowercased().hasSuffix(".jpg"),
+                   let rawPath = Insta360Paths.companionRawPath(for: file.sourcePath),
+                   !files.contains(where: { $0.sourcePath == rawPath && $0.isSynced }) {
+                    let rawName = (rawPath as NSString).lastPathComponent
+                    let rawFile = Insta360CameraFile(
+                        sourcePath: rawPath,
+                        downloadURL: Insta360Paths.buildDownloadURL(
+                            host: Insta360Defaults.cameraHost,
+                            httpPort: Insta360Defaults.cameraHTTPPort,
+                            sourcePath: rawPath
+                        ),
+                        createdAt: file.createdAt,
+                        name: rawName,
+                        storage: "sd",
+                        captureTime: file.captureTime
+                    )
+                    var rawDestination = BackupPathResolver.destinationURL(
+                        for: rawFile,
+                        camera: camera,
+                        settings: settings
+                    )
+                    rawDestination = BackupPathResolver.resolveCollisionURL(
+                        proposed: rawDestination,
+                        camera: camera,
+                        expectedSize: nil
+                    )
+                    if !fm.fileExists(atPath: rawDestination.path) {
+                        do {
+                            _ = try await downloader.download(
+                                file: rawFile,
+                                to: rawDestination,
+                                protocolKind: session.kind
+                            )
+                            SyncManifestStore.markSynced(rawFile, manifest: &manifest)
+                            copied += 1
+                        } catch {
+                            AppLogger.shared.warning(
+                                "Companion DNG skipped for \(rawName): \(error.localizedDescription)"
+                            )
+                        }
+                    }
+                }
             } catch {
                 failed += 1
                 AppLogger.shared.error("Download failed for \(file.sourcePath): \(error.localizedDescription)")

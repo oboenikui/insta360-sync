@@ -30,10 +30,18 @@ enum Insta360MediaProto {
             var captureTime: Int64?
             var size: Int64?
             let pathBytes = Array(path.utf8)
+            guard !pathBytes.isEmpty, !bytes.isEmpty else {
+                let name = (path as NSString).lastPathComponent
+                return MediaFileEntry(
+                    sourcePath: path,
+                    size: nil,
+                    captureTime: captureTimeFromFilename(name)
+                )
+            }
+
             var search = 0
             while search <= bytes.count - pathBytes.count {
-                guard let range = bytes[search...].firstRange(of: pathBytes) else { break }
-                let idx = search + range.lowerBound
+                guard let idx = indexOf(pathBytes, in: bytes, startingAt: search) else { break }
                 if let meta = metaAtPath(bytes: bytes, pathOffset: idx, pathLength: pathBytes.count) {
                     if let ct = meta.captureTime { captureTime = ct }
                     if let sz = meta.size { size = sz }
@@ -50,10 +58,16 @@ enum Insta360MediaProto {
     }
 
     private static func metaAtPath(bytes: [UInt8], pathOffset: Int, pathLength: Int) -> MediaFileEntry? {
+        guard pathOffset >= 0,
+              pathLength > 0,
+              pathOffset + pathLength <= bytes.count else {
+            return nil
+        }
         let start = max(0, pathOffset - 12)
         for tagPos in start..<pathOffset {
-            guard bytes[tagPos] == 0x0A else { continue }
-            guard let strLen = readVarint(bytes, offset: tagPos + 1) else { continue }
+            guard tagPos < bytes.count, bytes[tagPos] == 0x0A else { continue }
+            guard tagPos + 1 < bytes.count,
+                  let strLen = readVarint(bytes, offset: tagPos + 1) else { continue }
             let (length, strStart) = strLen
             guard strStart == pathOffset, length == pathLength else { continue }
             return parseFileEntry(Array(bytes[tagPos...]))
@@ -136,6 +150,17 @@ enum Insta360MediaProto {
         return MediaFileEntry(sourcePath: "", size: size, captureTime: captureTime)
     }
 
+    private static func indexOf(_ needle: [UInt8], in haystack: [UInt8], startingAt start: Int) -> Int? {
+        guard !needle.isEmpty, start >= 0, start <= haystack.count - needle.count else { return nil }
+        let limit = haystack.count - needle.count
+        for index in start...limit {
+            if haystack[index..<(index + needle.count)].elementsEqual(needle) {
+                return index
+            }
+        }
+        return nil
+    }
+
     private static func readVarint(_ bytes: [UInt8], offset: Int) -> (Int, Int)? {
         var result = 0
         var shift = 0
@@ -149,19 +174,6 @@ enum Insta360MediaProto {
             }
             shift += 7
             if shift > 63 { return nil }
-        }
-        return nil
-    }
-}
-
-private extension ArraySlice where Element == UInt8 {
-    func firstRange(of needle: [UInt8]) -> Range<Int>? {
-        guard !needle.isEmpty, count >= needle.count else { return nil }
-        let base = startIndex
-        for index in base...(base + count - needle.count) {
-            if Array(self[index..<(index + needle.count)]) == needle {
-                return index..<(index + needle.count)
-            }
         }
         return nil
     }

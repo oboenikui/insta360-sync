@@ -592,7 +592,7 @@ def run_probe(
         ucd2 = UCD2Client(host=host, port=tcp_port, log=ucd2_log)
         try:
             ucd2.open()
-            files = ucd2.list_files(http_port=http_port, wait_seconds=15)
+            files = ucd2.list_files(http_port=http_port, wait_seconds=30)
             lines.append(f"UCD2 (Luna Ultra): OK ({len(files)} files)")
         except UCD2Error as exc:
             lines.append(f"UCD2 (Luna Ultra): NG ({exc})")
@@ -643,6 +643,20 @@ def build_camera_download_request(
     return urllib.request.Request(url, method="GET", headers=headers)
 
 
+def build_camera_probe_request(url: str) -> urllib.request.Request:
+    return urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "User-Agent": CAMERA_HTTP_USER_AGENT,
+            "Accept": "*/*",
+            "Connection": "close",
+            "Range": "bytes=0-0",
+            "Icy-MetaData": "1",
+        },
+    )
+
+
 @dataclass
 class Insta360Session:
     """カメラ接続セッション。UCD2/TCP はダウンロード完了まで開いたまま維持する。"""
@@ -665,11 +679,13 @@ class Insta360Session:
             self._tcp = None
 
     def download_file(self, file: CameraFile, destination_dir: str, timeout: int = 300) -> str:
+        listed_paths = {item.source_path for item in self.files}
         return download_file(
             file,
             destination_dir,
             timeout=timeout,
             session=self,
+            listed_paths=listed_paths,
         )
 
     def __enter__(self) -> Insta360Session:
@@ -696,22 +712,29 @@ def open_session(
         try:
             ucd2.open()
             log.info("  UCD2 接続成功")
-            files = ucd2.list_files(http_port=http_port, wait_seconds=15)
+            files = ucd2.list_files(http_port=http_port, wait_seconds=30)
             log.info(f"  UCD2 で {len(files)} 件のファイルを取得")
+            camera_files = [
+                CameraFile(
+                    source_path=f.source_path,
+                    download_url=f.download_url,
+                    name=f.name,
+                    storage=f.storage,
+                    size=f.size,
+                    capture_time=f.capture_time,
+                )
+                for f in files
+            ]
+            camera_files = discover_companion_dng_files(
+                camera_files,
+                host=host,
+                http_port=http_port,
+                log=log,
+            )
             return Insta360Session(
                 protocol="ucd2",
                 host=host,
-                files=[
-                    CameraFile(
-                        source_path=f.source_path,
-                        download_url=f.download_url,
-                        name=f.name,
-                        storage=f.storage,
-                        size=f.size,
-                        capture_time=f.capture_time,
-                    )
-                    for f in files
-                ],
+                files=camera_files,
                 _ucd2=ucd2,
                 log=log,
             )
@@ -833,12 +856,74 @@ def _download_file_once(
     raise Insta360Error(f"ダウンロード失敗 ({file.display_name}): {last_error}")
 
 
+def probe_remote_file(url: str, timeout: int = 10) -> bool:
+    request = build_camera_probe_request(url)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status in (200, 206)
+    except urllib.error.HTTPError as exc:
+        return exc.code in (200, 206)
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def infer_companion_dng_files(
+    files: list[CameraFile],
+    *,
+    host: str,
+    http_port: int = DEFAULT_HTTP_PORT,
+    log: ClientLog | None = None,
+) -> list[CameraFile]:
+    """Add expected SD JPG companion DNG paths missing from the UCD2 list."""
+    from insta360_paths import build_download_url, companion_raw_path
+
+    listed_paths = {file.source_path for file in files}
+    extras: list[CameraFile] = []
+    for file in files:
+        if file.storage != "sd":
+            continue
+        raw_path = companion_raw_path(file.source_path)
+        if raw_path is None or raw_path in listed_paths:
+            continue
+        listed_paths.add(raw_path)
+        extras.append(
+            CameraFile(
+                source_path=raw_path,
+                download_url=build_download_url(host, http_port, raw_path),
+                name=raw_path.rsplit("/", 1)[-1],
+                storage="sd",
+                capture_time=file.capture_time,
+            )
+        )
+        if log is not None:
+            log.debug(f"inferred companion DNG: {raw_path}")
+    if extras and log is not None:
+        log.info(f"  SD JPG から DNG を {len(extras)} 件推定追加")
+    return files + extras
+
+
+def discover_companion_dng_files(
+    files: list[CameraFile],
+    *,
+    host: str,
+    http_port: int = DEFAULT_HTTP_PORT,
+    log: ClientLog | None = None,
+) -> list[CameraFile]:
+    return infer_companion_dng_files(
+        files,
+        host=host,
+        http_port=http_port,
+        log=log,
+    )
+
+
 def download_file(
     file: CameraFile,
     destination_dir: str,
     timeout: int = 300,
     *,
     session: Insta360Session | None = None,
+    listed_paths: set[str] | None = None,
 ) -> str:
     if session is None:
         raise Insta360Error(
@@ -846,4 +931,28 @@ def download_file(
             " UCD2 では TCP/6666 接続を維持しないと HTTP が 401 になります。"
         )
 
-    return _download_file_once(file, destination_dir, timeout, session=session)
+    destination = _download_file_once(file, destination_dir, timeout, session=session)
+    from insta360_paths import build_download_url, companion_raw_path
+
+    raw_path = companion_raw_path(file.source_path)
+    if raw_path is None:
+        return destination
+    raw_url = build_download_url(session.host, DEFAULT_HTTP_PORT, raw_path)
+    in_list = listed_paths is not None and raw_path in listed_paths
+    if not in_list and not probe_remote_file(raw_url, timeout=min(timeout, 10)):
+        return destination
+    raw_file = CameraFile(
+        source_path=raw_path,
+        download_url=raw_url,
+        name=raw_path.rsplit("/", 1)[-1],
+        storage=file.storage,
+        capture_time=file.capture_time,
+    )
+    try:
+        _download_file_once(raw_file, destination_dir, timeout, session=session)
+        if session.log is not None:
+            session.log.info(f"  companion DNG: {raw_file.name}")
+    except Insta360Error as exc:
+        if session.log is not None:
+            session.log.debug(f"companion DNG skipped ({raw_file.name}): {exc}")
+    return destination
