@@ -32,6 +32,8 @@ struct Insta360CameraFile: Sendable {
     var createdAt: Date?
     var name: String
     var storage: String
+    var captureTime: Int64?
+    var isSynced: Bool
 
     init(
         sourcePath: String,
@@ -39,7 +41,9 @@ struct Insta360CameraFile: Sendable {
         size: Int64? = nil,
         createdAt: Date? = nil,
         name: String = "",
-        storage: String = "sd"
+        storage: String = "sd",
+        captureTime: Int64? = nil,
+        isSynced: Bool = false
     ) {
         self.sourcePath = sourcePath
         self.downloadURL = downloadURL
@@ -51,6 +55,8 @@ struct Insta360CameraFile: Sendable {
         } else {
             self.storage = storage
         }
+        self.captureTime = captureTime ?? Insta360MediaProto.captureTimeFromFilename(self.name)
+        self.isSynced = isSynced
     }
 
     var localName: String {
@@ -58,7 +64,8 @@ struct Insta360CameraFile: Sendable {
     }
 
     var displayName: String {
-        "[\(Insta360Paths.displayLabel(storage: storage))] \(name)"
+        let prefix = isSynced ? "[済] " : ""
+        return "\(prefix)[\(Insta360Paths.displayLabel(storage: storage))] \(name)"
     }
 }
 

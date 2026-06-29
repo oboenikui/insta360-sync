@@ -40,6 +40,8 @@ class CameraFile:
     size: int | None = None
     name: str = ""
     storage: str = "sd"
+    capture_time: int | None = None
+    synced: bool = False
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -48,6 +50,10 @@ class CameraFile:
             from insta360_paths import storage_from_path
 
             self.storage = storage_from_path(self.source_path)
+        if self.capture_time is None:
+            from insta360_media_proto import capture_time_from_filename
+
+            self.capture_time = capture_time_from_filename(self.name)
 
     @property
     def local_name(self) -> str:
@@ -60,7 +66,8 @@ class CameraFile:
         from insta360_paths import display_label
 
         label = display_label(self.storage)
-        return f"[{label}] {self.name}"
+        prefix = "[済] " if self.synced else ""
+        return f"{prefix}[{label}] {self.name}"
 
 
 @dataclass
@@ -700,6 +707,8 @@ def open_session(
                         download_url=f.download_url,
                         name=f.name,
                         storage=f.storage,
+                        size=f.size,
+                        capture_time=f.capture_time,
                     )
                     for f in files
                 ],

@@ -7,7 +7,7 @@ insta360-wifi-api.
 
 from __future__ import annotations
 
-from insta360_paths import build_download_url, parse_media_paths, storage_from_path
+from insta360_paths import build_download_url, storage_from_path
 import socket
 import struct
 import threading
@@ -50,6 +50,8 @@ class UCD2File:
     download_url: str
     name: str = ""
     storage: str = "sd"
+    size: int | None = None
+    capture_time: int | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -59,7 +61,24 @@ class UCD2File:
 
 
 def parse_paths_from_payload(data: bytes) -> list[str]:
-    return parse_media_paths(data)
+    from insta360_media_proto import parse_media_file_entries
+
+    return [entry.source_path for entry in parse_media_file_entries(data)]
+
+
+def parse_files_from_payload(data: bytes) -> list[UCD2File]:
+    from insta360_media_proto import parse_media_file_entries
+
+    return [
+        UCD2File(
+            source_path=entry.source_path,
+            name=entry.source_path.rsplit("/", 1)[-1],
+            storage=storage_from_path(entry.source_path),
+            size=entry.size,
+            capture_time=entry.capture_time,
+        )
+        for entry in parse_media_file_entries(data)
+    ]
 
 def iter_ucd2_packets(stream: bytes):
     offset = 0
@@ -165,38 +184,49 @@ class UCD2Client:
             self._send(segment)
             time.sleep(0.02)
 
-        best_paths: list[str] = []
+        best_entries: list[UCD2File] = []
         last_count = 0
         stable_since: float | None = None
         deadline = time.time() + wait_seconds
         while time.time() < deadline:
             with self.lock:
                 payload = bytes(self.received)
-            current = parse_paths_from_payload(payload)
+            current = parse_files_from_payload(payload)
             if len(current) > last_count:
-                best_paths = current
+                best_entries = current
                 last_count = len(current)
                 stable_since = time.time()
-                dng_count = sum(1 for path in current if path.lower().endswith(".dng"))
-                self._debug(
-                    f"file list growing: {len(current)} paths ({dng_count} dng)"
+                dng_count = sum(
+                    1 for entry in current if entry.source_path.lower().endswith(".dng")
                 )
-            elif best_paths and stable_since is not None:
+                with_meta = sum(1 for entry in current if entry.size is not None)
+                self._debug(
+                    f"file list growing: {len(current)} paths ({dng_count} dng, {with_meta} with size)"
+                )
+            elif best_entries and stable_since is not None:
                 if time.time() - stable_since >= stable_seconds:
                     break
             time.sleep(0.05)
 
-        if best_paths:
-            dng_count = sum(1 for path in best_paths if path.lower().endswith(".dng"))
-            self._info(f"UCD2 file list received ({len(best_paths)} paths, {dng_count} dng)")
+        if best_entries:
+            dng_count = sum(
+                1 for entry in best_entries if entry.source_path.lower().endswith(".dng")
+            )
+            with_meta = sum(1 for entry in best_entries if entry.size is not None)
+            self._info(
+                f"UCD2 file list received ({len(best_entries)} paths, {dng_count} dng, "
+                f"{with_meta} with metadata)"
+            )
             return [
                 UCD2File(
-                    source_path=path,
-                    download_url=build_download_url(self.host, http_port, path),
-                    name=path.rsplit("/", 1)[-1],
-                    storage=storage_from_path(path),
+                    source_path=entry.source_path,
+                    download_url=build_download_url(self.host, http_port, entry.source_path),
+                    name=entry.name,
+                    storage=entry.storage,
+                    size=entry.size,
+                    capture_time=entry.capture_time,
                 )
-                for path in best_paths
+                for entry in best_entries
             ]
 
         with self.lock:

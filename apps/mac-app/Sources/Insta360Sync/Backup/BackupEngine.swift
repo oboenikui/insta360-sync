@@ -30,7 +30,14 @@ final class BackupEngine: @unchecked Sendable {
             )
         )
 
-        let files = try await session.listAllFiles()
+        var manifest = SyncManifestStore.load(destinationRoot: settings.destinationRoot, cameraID: camera.id)
+        let listedFiles = try await session.listAllFiles()
+        let files = listedFiles.map { file in
+            var updated = file
+            updated.isSynced = SyncManifestStore.isSynced(file, manifest: manifest)
+            return updated
+        }
+
         var copied = 0
         var skipped = 0
         var failed = 0
@@ -41,10 +48,15 @@ final class BackupEngine: @unchecked Sendable {
                     cameraName: camera.displayName,
                     completed: index,
                     total: files.count,
-                    currentFile: (file.sourcePath as NSString).lastPathComponent,
+                    currentFile: file.name,
                     phase: "Downloading"
                 )
             )
+
+            if file.isSynced {
+                skipped += 1
+                continue
+            }
 
             var destination = BackupPathResolver.destinationURL(for: file, camera: camera, settings: settings)
             destination = BackupPathResolver.resolveCollisionURL(
@@ -57,10 +69,12 @@ final class BackupEngine: @unchecked Sendable {
             if fm.fileExists(atPath: destination.path) {
                 let existingSize = fm.fileSize(at: destination)
                 if let expected = file.size, let existingSize, existingSize == expected {
+                    SyncManifestStore.markSynced(file, manifest: &manifest)
                     skipped += 1
                     continue
                 }
                 if file.size == nil, existingSize != nil {
+                    SyncManifestStore.markSynced(file, manifest: &manifest)
                     skipped += 1
                     continue
                 }
@@ -70,6 +84,7 @@ final class BackupEngine: @unchecked Sendable {
                     continue
                 }
                 if existingSize != nil {
+                    SyncManifestStore.markSynced(file, manifest: &manifest)
                     skipped += 1
                     continue
                 }
@@ -81,12 +96,15 @@ final class BackupEngine: @unchecked Sendable {
                     to: destination,
                     protocolKind: session.kind
                 )
+                SyncManifestStore.markSynced(file, manifest: &manifest)
                 copied += 1
             } catch {
                 failed += 1
                 AppLogger.shared.error("Download failed for \(file.sourcePath): \(error.localizedDescription)")
             }
         }
+
+        try? SyncManifestStore.save(manifest, destinationRoot: settings.destinationRoot, cameraID: camera.id)
 
         progress(
             BackupProgress(

@@ -52,40 +52,41 @@ final class Insta360UCD2Client: @unchecked Sendable {
         try await sendReplay()
 
         let deadline = Date().addingTimeInterval(15)
-        var bestPaths: [String] = []
+        var bestEntries: [MediaFileEntry] = []
         var lastCount = 0
         var stableSince: Date?
         while Date() < deadline {
-            let current = Insta360Paths.parseMediaPaths(from: receiveBuffer)
+            let current = Insta360MediaProto.parseMediaFileEntries(from: receiveBuffer)
             if current.count > lastCount {
-                bestPaths = current
+                bestEntries = current
                 lastCount = current.count
                 stableSince = Date()
-            } else if !bestPaths.isEmpty, let stableSince, Date().timeIntervalSince(stableSince) >= 1.0 {
+            } else if !bestEntries.isEmpty, let stableSince, Date().timeIntervalSince(stableSince) >= 1.0 {
                 break
             }
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        guard !bestPaths.isEmpty else {
+        guard !bestEntries.isEmpty else {
             throw Insta360ClientError.cameraError(
                 "UCD2 file list timed out (received \(receiveBuffer.count) bytes)"
             )
         }
 
-        return bestPaths.map { path in
-            let name = (path as NSString).lastPathComponent
+        return bestEntries.map { entry in
+            let name = (entry.sourcePath as NSString).lastPathComponent
             return Insta360CameraFile(
-                sourcePath: path,
+                sourcePath: entry.sourcePath,
                 downloadURL: Insta360Paths.buildDownloadURL(
                     host: hostString,
                     httpPort: Insta360Defaults.cameraHTTPPort,
-                    sourcePath: path
+                    sourcePath: entry.sourcePath
                 ),
-                size: nil,
+                size: entry.size,
                 createdAt: BackupPathResolver.parseCreationDate(fromFilename: name),
                 name: name,
-                storage: Insta360Paths.storageFromPath(path)
+                storage: Insta360Paths.storageFromPath(entry.sourcePath),
+                captureTime: entry.captureTime
             )
         }
     }
