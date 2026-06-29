@@ -25,6 +25,12 @@ from insta360_client import (  # noqa: E402
     open_session,
     run_probe,
 )
+from sync_manifest import (  # noqa: E402
+    is_synced,
+    load_manifest,
+    mark_synced,
+    save_manifest,
+)
 
 
 def format_size(size: int | None) -> str:
@@ -104,6 +110,9 @@ def run_tui(
     files = session.files
     protocol = session.protocol
     host = session.host
+    manifest = load_manifest(destination_dir)
+    for file in files:
+        file.synced = is_synced(file, manifest)
     curses.curs_set(0)
     stdscr.keypad(True)
     if curses.has_colors():
@@ -153,10 +162,16 @@ def run_tui(
             errors: list[str] = []
             for index in targets:
                 file = files[index]
+                if file.synced:
+                    errors.append(f"{file.name}: 同期済みのためスキップ")
+                    continue
                 status = f"ダウンロード中: {file.display_name}"
                 draw_screen(stdscr, files, selected, cursor, scroll, status, protocol, host)
                 try:
                     path = session.download_file(file, destination_dir)
+                    mark_synced(manifest, file)
+                    save_manifest(destination_dir, manifest)
+                    file.synced = True
                     ok += 1
                     status = f"保存しました: {path}"
                 except (Insta360Error, OSError, urllib.error.URLError) as exc:
@@ -238,7 +253,16 @@ def main() -> int:
         )
         return 1
 
+    manifest = load_manifest(destination_dir)
+    synced_count = 0
+    for file in session.files:
+        file.synced = is_synced(file, manifest)
+        if file.synced:
+            synced_count += 1
+
     print(f"{session.protocol} で接続しました。{len(session.files)} 件のファイル。", file=sys.stderr)
+    if synced_count:
+        print(f"同期済み: {synced_count} 件（次回スキップ）", file=sys.stderr)
     print(f"保存先: {destination_dir}", file=sys.stderr)
 
     try:

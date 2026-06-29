@@ -38,6 +38,13 @@ def display_label(storage: str) -> str:
     return STORAGE_LABELS.get(storage, storage)
 
 
+def companion_raw_path(source_path: str) -> str | None:
+    """Return companion DNG path for a JPG, or None."""
+    if not source_path.lower().endswith(".jpg"):
+        return None
+    return f"{source_path[:-4]}.dng"
+
+
 def parse_media_paths(data: bytes) -> list[str]:
     """Return unique media paths; prefer full /storage_*/DCIM paths over embedded /DCIM matches."""
     seen: set[str] = set()
@@ -79,10 +86,16 @@ def dedupe_storage_paths(paths: list[str]) -> list[str]:
     if not internal_suffixes:
         return paths
 
+    # Bare /DCIM paths mirror internal-storage files for JPG/video only.
+    # SD-card DNG paths also use /DCIM/... and must not be dropped when a
+    # /storage_internal/... entry shares the same suffix.
+    dedupe_extensions = frozenset({"jpg", "jpeg", "mp4", "lrv", "insv"})
     deduped: list[str] = []
     for path in paths:
         if path.startswith("/DCIM/") and path in internal_suffixes:
-            continue
+            ext = path.rsplit(".", 1)[-1].lower()
+            if ext in dedupe_extensions:
+                continue
         deduped.append(path)
     return deduped
 

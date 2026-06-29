@@ -46,6 +46,11 @@ enum Insta360Paths {
         }
     }
 
+    static func companionRawPath(for sourcePath: String) -> String? {
+        guard sourcePath.lowercased().hasSuffix(".jpg") else { return nil }
+        return String(sourcePath.dropLast(4)) + ".dng"
+    }
+
     static func buildDownloadURL(host: String, httpPort: UInt16, sourcePath: String) -> URL {
         URL(string: "http://\(host):\(httpPort)\(sourcePath)")!
     }
@@ -101,8 +106,37 @@ enum Insta360Paths {
                 .map { String($0.dropFirst("/storage_internal".count)) }
         )
         guard !internalSuffixes.isEmpty else { return paths }
+        let dedupeExtensions: Set<String> = ["jpg", "jpeg", "mp4", "lrv", "insv"]
         return paths.filter { path in
-            !(path.hasPrefix("/DCIM/") && internalSuffixes.contains(path))
+            guard path.hasPrefix("/DCIM/"), internalSuffixes.contains(path) else { return true }
+            let ext = (path as NSString).pathExtension.lowercased()
+            return !dedupeExtensions.contains(ext)
         }
+    }
+
+    static func inferCompanionDNGFiles(
+        _ files: [Insta360CameraFile],
+        host: String,
+        httpPort: UInt16
+    ) -> [Insta360CameraFile] {
+        var listed = Set(files.map(\.sourcePath))
+        var result = files
+        for file in files where file.storage == "sd" {
+            guard let rawPath = companionRawPath(for: file.sourcePath) else { continue }
+            guard !listed.contains(rawPath) else { continue }
+            listed.insert(rawPath)
+            let name = (rawPath as NSString).lastPathComponent
+            result.append(
+                Insta360CameraFile(
+                    sourcePath: rawPath,
+                    downloadURL: buildDownloadURL(host: host, httpPort: httpPort, sourcePath: rawPath),
+                    createdAt: file.createdAt,
+                    name: name,
+                    storage: "sd",
+                    captureTime: file.captureTime
+                )
+            )
+        }
+        return result
     }
 }
