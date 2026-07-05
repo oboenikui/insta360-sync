@@ -107,6 +107,11 @@ struct PendingBackup: Codable, Identifiable, Sendable {
     }
 }
 
+struct BackupFailure: Codable, Equatable, Sendable {
+    var path: String
+    var error: String
+}
+
 struct BackupHistoryEntry: Codable, Identifiable, Sendable {
     var id: UUID
     var cameraName: String
@@ -116,4 +121,5 @@ struct BackupHistoryEntry: Codable, Identifiable, Sendable {
     var skippedCount: Int
     var failedCount: Int
     var message: String?
+    var failures: [BackupFailure] = []
 }
