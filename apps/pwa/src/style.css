@@ -195,6 +195,25 @@ button.secondary {
   border-radius: 0;
 }
 
+.progress-info {
+  row-gap: 8px;
+}
+
+.progress-bar {
+  grid-column: 1 / -1;
+  height: 8px;
+  border-radius: 999px;
+  background: #1f2937;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: #38bdf8;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
 .cert-help {
   background: #0b1220;
   border: 1px solid #1f2937;
