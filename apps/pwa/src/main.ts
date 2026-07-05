@@ -257,14 +257,50 @@ function renderPending(items: PendingBackup[]) {
   );
 }
 
+function formatAppStatus(status: string): string {
+  switch (status) {
+    case "stopped":
+      return "停止中";
+    case "running":
+      return "実行中";
+    case "error":
+      return "エラー";
+    default:
+      return status;
+  }
+}
+
 function renderProgress(status: BackupStatus) {
-  const box = document.querySelector<HTMLPreElement>("#progressBox");
+  const box = document.querySelector<HTMLDivElement>("#progressBox");
   if (!box) return;
   if (!status.progress) {
-    box.textContent = `状態: ${status.status}`;
+    appendMutedMessage(box, `状態: ${formatAppStatus(status.status)}`);
     return;
   }
-  box.textContent = JSON.stringify(status.progress, null, 2);
+
+  const { cameraName, phase, completed, total, currentFile } = status.progress;
+  const entries: Array<{ term: string; value: string; valueClassName?: string }> = [
+    { term: "カメラ", value: cameraName },
+    { term: "フェーズ", value: phase },
+    { term: "進捗", value: total > 0 ? `${completed} / ${total} (${Math.round((completed / total) * 100)}%)` : `${completed}` },
+  ];
+  if (currentFile) {
+    entries.push({ term: "ファイル", value: currentFile, valueClassName: "mono" });
+  }
+
+  const dl = el("dl", { className: "cert-info progress-info" });
+  for (const { term, value, valueClassName } of entries) {
+    dl.append(el("dt", { textContent: term }));
+    dl.append(el("dd", { className: valueClassName, textContent: value }));
+  }
+
+  if (total > 0) {
+    const fill = el("div", { className: "progress-bar-fill" });
+    fill.style.width = `${Math.min(100, Math.round((completed / total) * 100))}%`;
+    dl.append(el("div", { className: "progress-bar" }, fill));
+  }
+
+  replaceChildren(box, dl);
 }
 
 function renderHistory(history: BackupStatus["history"]) {
