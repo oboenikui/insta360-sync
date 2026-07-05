@@ -26,10 +26,6 @@ def storage_from_path(path: str) -> str:
     return "sd"
 
 
-def local_filename(name: str, storage: str) -> str:
-    return name
-
-
 def display_label(storage: str) -> str:
     return STORAGE_LABELS.get(storage, storage)
 

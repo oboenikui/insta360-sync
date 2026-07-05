@@ -22,10 +22,6 @@ enum Insta360Paths {
         return "sd"
     }
 
-    static func localFilename(name: String, storage: String) -> String {
-        name
-    }
-
     static func displayLabel(storage: String) -> String {
         switch storage {
         case "sd":
