@@ -59,10 +59,6 @@ struct Insta360CameraFile: Sendable {
         self.isSynced = isSynced
     }
 
-    var localName: String {
-        Insta360Paths.localFilename(name: name, storage: storage)
-    }
-
     var displayName: String {
         let prefix = isSynced ? "[済] " : ""
         return "\(prefix)[\(Insta360Paths.displayLabel(storage: storage))] \(name)"

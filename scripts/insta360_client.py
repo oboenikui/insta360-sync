@@ -56,12 +56,6 @@ class CameraFile:
             self.capture_time = capture_time_from_filename(self.name)
 
     @property
-    def local_name(self) -> str:
-        from insta360_paths import local_filename
-
-        return local_filename(self.name, self.storage)
-
-    @property
     def display_name(self) -> str:
         from insta360_paths import display_label
 
@@ -812,8 +806,7 @@ def _download_file_once(
     *,
     session: Insta360Session,
 ) -> str:
-    local_name = file.local_name
-    destination = f"{destination_dir.rstrip('/')}/{local_name}"
+    destination = f"{destination_dir.rstrip('/')}/{file.name}"
     last_error: Exception | None = None
     for use_range in (True, False):
         request = build_camera_download_request(
@@ -851,7 +844,7 @@ def _download_file_once(
             last_error = exc
             if use_range:
                 continue
-            raise Insta360Error(f"保存失敗 ({local_name}): {exc}") from exc
+            raise Insta360Error(f"保存失敗 ({file.name}): {exc}") from exc
 
     raise Insta360Error(f"ダウンロード失敗 ({file.display_name}): {last_error}")
 

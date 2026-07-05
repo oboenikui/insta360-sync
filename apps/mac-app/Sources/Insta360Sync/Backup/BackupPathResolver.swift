@@ -6,7 +6,7 @@ enum BackupPathResolver {
         camera: CameraProfile,
         settings: AppSettings
     ) -> URL {
-        let filename = localFilename(for: file)
+        let filename = file.name
         switch settings.folderStructureMode {
         case .preserveOriginal:
             let relative = file.sourcePath.hasPrefix("/") ? String(file.sourcePath.dropFirst()) : file.sourcePath
@@ -20,10 +20,6 @@ enum BackupPathResolver {
                 .appendingPathComponent(folder, isDirectory: true)
                 .appendingPathComponent(filename, isDirectory: false)
         }
-    }
-
-    static func localFilename(for file: Insta360CameraFile) -> String {
-        Insta360Paths.localFilename(name: file.name, storage: file.storage)
     }
 
     static func resolveCollisionURL(
