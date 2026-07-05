@@ -3,9 +3,18 @@ import Network
 import Security
 
 struct TLSCertificateEndpoints: Codable, Equatable {
+    /// 証明書生成ロジックのバージョン。openssl 引数を変えたら必ずインクリメントし、
+    /// 既存ユーザーの証明書を強制的に再生成させる。旧マニフェストには存在しないため
+    /// Optional にしておくことで JSON デコードが失敗せず、`nil != currentFormatVersion`
+    /// によって等値比較が外れ、再生成が走る。
+    var formatVersion: Int?
     var commonName: String
     var dnsNames: [String]
     var ipAddresses: [String]
+
+    /// - v2: `basicConstraints=CA:TRUE`, `keyUsage=keyCertSign,...`, `extendedKeyUsage=serverAuth`
+    ///   を追加し、iOS の証明書信頼設定で「フル信頼」を有効化できるようにした。
+    static let currentFormatVersion = 2
 
     static func current() -> TLSCertificateEndpoints {
         let host = Host.current()
@@ -51,6 +60,7 @@ struct TLSCertificateEndpoints: Codable, Equatable {
         let cn = sortedDNS.first(where: { $0.hasSuffix(".local") }) ?? sortedDNS.first ?? "localhost"
 
         return TLSCertificateEndpoints(
+            formatVersion: currentFormatVersion,
             commonName: cn,
             dnsNames: sortedDNS,
             ipAddresses: ips.sorted()
@@ -104,6 +114,24 @@ enum TLSConfiguration {
     /// macOS の SecPKCS12Import は空パスワードの .p12 を拒否するため、ローカル用途の固定値を使う。
     private static let p12Passphrase = "insta360-sync-local-tls"
 
+    /// TLS 証明書・秘密鍵・SAN マニフェストを保存するディレクトリ。
+    static var storageDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Insta360Sync/tls", isDirectory: true)
+    }
+
+    static var certificatePEMURL: URL {
+        storageDirectory.appendingPathComponent("server.crt")
+    }
+
+    static var manifestURL: URL {
+        storageDirectory.appendingPathComponent("san-manifest.json")
+    }
+
+    static func loadStoredEndpoints() -> TLSCertificateEndpoints? {
+        loadManifest(from: manifestURL)
+    }
+
     static func makeServerParameters(identity: SecIdentity) -> NWParameters {
         let tlsOptions = NWProtocolTLS.Options()
         guard let secIdentity = sec_identity_create(identity) else {
@@ -154,7 +182,7 @@ enum TLSConfiguration {
         return stored != current
     }
 
-    private static func loadManifest(from path: URL) -> TLSCertificateEndpoints? {
+    static func loadManifest(from path: URL) -> TLSCertificateEndpoints? {
         guard let data = try? Data(contentsOf: path) else { return nil }
         return try? JSONDecoder().decode(TLSCertificateEndpoints.self, from: data)
     }
@@ -202,8 +230,17 @@ enum TLSConfiguration {
             "-keyout", keyPath.path,
             "-out", certPath.path,
             "-days", "825", "-nodes",
+            "-sha256",
             "-subj", "/CN=\(endpoints.commonName)/O=Local",
             "-addext", "subjectAltName=\(endpoints.subjectAltName)",
+            // iOS の「証明書信頼設定」に表示させるためには CA:TRUE と鍵署名可能な keyUsage が必要。
+            // 単一の自己署名ルート証明書でありながら TLS サーバー証明書としても振る舞うため、
+            // 署名系フラグと serverAuth の EKU を両方付ける。
+            "-addext", "basicConstraints=critical,CA:TRUE",
+            "-addext", "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign",
+            "-addext", "extendedKeyUsage=serverAuth,clientAuth",
+            "-addext", "subjectKeyIdentifier=hash",
+            "-addext", "authorityKeyIdentifier=keyid:always,issuer",
         ]
         try process.run()
         process.waitUntilExit()

@@ -15,9 +15,7 @@ final class HTTPServer: @unchecked Sendable {
 
     func start() throws {
         guard listener == nil else { return }
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Insta360Sync/tls", isDirectory: true)
-        let identity = try TLSConfiguration.loadOrCreateIdentity(directory: support)
+        let identity = try TLSConfiguration.loadOrCreateIdentity(directory: TLSConfiguration.storageDirectory)
         let params = TLSConfiguration.makeServerParameters(identity: identity)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw HTTPServerError.invalidPort

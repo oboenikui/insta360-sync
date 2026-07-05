@@ -63,6 +63,31 @@ export async function fetchVapidPublicKey(): Promise<string> {
   return json.vapidPublicKey;
 }
 
+export type CertificateInfo = {
+  commonName: string;
+  dnsNames: string[];
+  ipAddresses: string[];
+  notBefore?: string;
+  notAfter?: string;
+  sha256Fingerprint: string;
+  sha1Fingerprint: string;
+  serialNumber?: string;
+  downloadBaseName: string;
+  pem: string;
+};
+
+export async function fetchCertificateInfo(): Promise<CertificateInfo> {
+  const response = await fetch(`${getBaseURL()}/api/public/certificate`);
+  if (!response.ok) {
+    throw new Error(`${response.status} 証明書情報の取得に失敗`);
+  }
+  return (await response.json()) as CertificateInfo;
+}
+
+export function certificateDownloadURL(kind: "pem" | "crt" | "der" | "mobileconfig"): string {
+  return `${getBaseURL()}/api/public/certificate.${kind}`;
+}
+
 export async function registerPush(vapidPublicKey?: string): Promise<void> {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
     throw new Error("このブラウザは Web Push に対応していません");
