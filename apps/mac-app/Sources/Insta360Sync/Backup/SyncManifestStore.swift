@@ -1,11 +1,22 @@
 import Foundation
 
+enum SyncManifestDisposition: String, Codable, Sendable {
+    case synced
+    case unavailable404
+}
+
 struct SyncedFileRecord: Codable, Equatable, Sendable {
     var name: String
     var storage: String
     var size: Int64?
     var captureTime: Int64?
     var syncedAt: Date
+    /// 省略時は `.synced`（v1 マニフェスト互換）。
+    var disposition: SyncManifestDisposition?
+
+    var effectiveDisposition: SyncManifestDisposition {
+        disposition ?? .synced
+    }
 
     func matches(file: Insta360CameraFile) -> Bool {
         guard name == file.name, storage == file.storage else { return false }
@@ -16,7 +27,7 @@ struct SyncedFileRecord: Codable, Equatable, Sendable {
 }
 
 struct SyncManifest: Codable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int
     var files: [String: SyncedFileRecord]
@@ -40,7 +51,7 @@ enum SyncManifestStore {
         let url = manifestURL(destinationRoot: destinationRoot, cameraID: cameraID)
         guard let data = try? Data(contentsOf: url),
               let manifest = try? JSONDecoder.iso8601.decode(SyncManifest.self, from: data),
-              manifest.version == SyncManifest.currentVersion else {
+              manifest.version == 1 || manifest.version == SyncManifest.currentVersion else {
             return .empty()
         }
         return manifest
@@ -55,7 +66,20 @@ enum SyncManifestStore {
 
     static func isSynced(_ file: Insta360CameraFile, manifest: SyncManifest) -> Bool {
         guard let record = manifest.files[file.sourcePath] else { return false }
+        guard record.effectiveDisposition == .synced else { return false }
         return record.matches(file: file)
+    }
+
+    static func isUnavailable404(sourcePath: String, manifest: SyncManifest) -> Bool {
+        manifest.files[sourcePath]?.effectiveDisposition == .unavailable404
+    }
+
+    static func unavailable404Paths(in manifest: SyncManifest) -> Set<String> {
+        Set(
+            manifest.files.compactMap { sourcePath, record in
+                record.effectiveDisposition == .unavailable404 ? sourcePath : nil
+            }
+        )
     }
 
     static func markSynced(_ file: Insta360CameraFile, manifest: inout SyncManifest) {
@@ -65,7 +89,20 @@ enum SyncManifestStore {
             storage: file.storage,
             size: file.size,
             captureTime: file.captureTime,
-            syncedAt: Date()
+            syncedAt: Date(),
+            disposition: .synced
+        )
+    }
+
+    static func markUnavailable404(_ file: Insta360CameraFile, manifest: inout SyncManifest) {
+        manifest.version = SyncManifest.currentVersion
+        manifest.files[file.sourcePath] = SyncedFileRecord(
+            name: file.name,
+            storage: file.storage,
+            size: file.size,
+            captureTime: file.captureTime,
+            syncedAt: Date(),
+            disposition: .unavailable404
         )
     }
 }
@@ -89,6 +126,16 @@ actor SyncManifestFlushScheduler {
         SyncManifestStore.markSynced(file, manifest: &manifest)
         dirty = true
         startFlushLoopIfNeeded()
+    }
+
+    func markUnavailable404(_ file: Insta360CameraFile) {
+        SyncManifestStore.markUnavailable404(file, manifest: &manifest)
+        dirty = true
+        startFlushLoopIfNeeded()
+    }
+
+    func isUnavailable404(sourcePath: String) -> Bool {
+        SyncManifestStore.isUnavailable404(sourcePath: sourcePath, manifest: manifest)
     }
 
     func finish() {

@@ -38,7 +38,10 @@ final class BackupEngine: @unchecked Sendable {
             cameraID: camera.id
         )
 
+        let unavailablePaths = SyncManifestStore.unavailable404Paths(in: manifest)
+
         let listedFiles = try await session.listAllFiles()
+            .filter { !unavailablePaths.contains($0.sourcePath) }
         let files = listedFiles.map { file in
             var updated = file
             updated.isSynced = SyncManifestStore.isSynced(file, manifest: manifest)
@@ -82,6 +85,8 @@ final class BackupEngine: @unchecked Sendable {
                 if file.isInferredCompanion {
                     switch await downloader.probeRemoteFile(url: file.downloadURL) {
                     case .notFound:
+                        await manifestScheduler.markUnavailable404(file)
+                        skipped += 1
                         AppLogger.shared.debug("Inferred companion DNG not found: \(file.name)")
                         continue
                     case .available, .inconclusive:
@@ -116,6 +121,8 @@ final class BackupEngine: @unchecked Sendable {
                     }
                 } catch {
                     if file.isInferredCompanion, FileDownloader.isHTTPNotFound(error) {
+                        await manifestScheduler.markUnavailable404(file)
+                        skipped += 1
                         AppLogger.shared.debug(
                             "Inferred companion DNG not found: \(file.name)"
                         )
@@ -196,8 +203,12 @@ final class BackupEngine: @unchecked Sendable {
         case .skipAlreadyPresent:
             await manifestScheduler.markSynced(rawFile)
         case let .download(destination, overwrite):
+            if await manifestScheduler.isUnavailable404(sourcePath: rawPath) {
+                return
+            }
             switch await downloader.probeRemoteFile(url: rawFile.downloadURL) {
             case .notFound:
+                await manifestScheduler.markUnavailable404(rawFile)
                 AppLogger.shared.debug("Companion DNG not found: \(rawName)")
                 return
             case .available, .inconclusive:
@@ -214,6 +225,7 @@ final class BackupEngine: @unchecked Sendable {
                 copied += 1
             } catch {
                 if FileDownloader.isHTTPNotFound(error) {
+                    await manifestScheduler.markUnavailable404(rawFile)
                     AppLogger.shared.debug("Companion DNG not found: \(rawName)")
                     return
                 }
