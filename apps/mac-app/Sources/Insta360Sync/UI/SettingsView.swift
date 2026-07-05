@@ -13,7 +13,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("保存先") {
+                Section {
                     Text(settings.destinationRoot.path)
                         .font(.caption)
                         .textSelection(.enabled)
@@ -23,6 +23,15 @@ struct SettingsView: View {
                             Text(mode.label).tag(mode)
                         }
                     }
+                    Picker("重複ファイル", selection: $settings.duplicateFileBehavior) {
+                        ForEach(DuplicateFileBehavior.allCases) { behavior in
+                            Text(behavior.label).tag(behavior)
+                        }
+                    }
+                } header: {
+                    Text("保存先")
+                } footer: {
+                    Text("保存先に同名ファイルがある場合の動作です。")
                 }
 
                 Section("カメラ") {

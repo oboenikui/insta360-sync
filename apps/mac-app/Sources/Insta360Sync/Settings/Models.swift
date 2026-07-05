@@ -50,6 +50,22 @@ enum FolderStructureMode: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
+enum DuplicateFileBehavior: String, Codable, CaseIterable, Identifiable, Sendable {
+    case addNumericSuffix
+    case overwrite
+    case skip
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .addNumericSuffix: "番号サフィックスを付けて保存（_1, _2 …）"
+        case .overwrite: "上書き"
+        case .skip: "何もしない（スキップ）"
+        }
+    }
+}
+
 enum Insta360Defaults {
     static let cameraHost = "192.168.42.1"
     static let cameraTCPPort: UInt16 = 6666

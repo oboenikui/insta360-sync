@@ -10,6 +10,7 @@ final class AppSettings: @unchecked Sendable {
         static let cameras = "cameras"
         static let destinationRoot = "destinationRoot"
         static let folderStructureMode = "folderStructureMode"
+        static let duplicateFileBehavior = "duplicateFileBehavior"
         static let scanIntervalSeconds = "scanIntervalSeconds"
         static let httpsPort = "httpsPort"
         static let apiToken = "apiToken"
@@ -29,6 +30,10 @@ final class AppSettings: @unchecked Sendable {
 
     var folderStructureMode: FolderStructureMode {
         didSet { defaults.set(folderStructureMode.rawValue, forKey: Keys.folderStructureMode) }
+    }
+
+    var duplicateFileBehavior: DuplicateFileBehavior {
+        didSet { defaults.set(duplicateFileBehavior.rawValue, forKey: Keys.duplicateFileBehavior) }
     }
 
     var scanIntervalSeconds: TimeInterval {
@@ -81,6 +86,13 @@ final class AppSettings: @unchecked Sendable {
             self.folderStructureMode = mode
         } else {
             self.folderStructureMode = .preserveOriginal
+        }
+
+        if let raw = defaults.string(forKey: Keys.duplicateFileBehavior),
+           let behavior = DuplicateFileBehavior(rawValue: raw) {
+            self.duplicateFileBehavior = behavior
+        } else {
+            self.duplicateFileBehavior = .skip
         }
 
         self.scanIntervalSeconds = defaults.object(forKey: Keys.scanIntervalSeconds) as? TimeInterval
