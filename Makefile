@@ -1,5 +1,7 @@
 .PHONY: pwa mac-app mac-app-signed run run-signed
 
+APP_BUNDLE := $(CURDIR)/apps/mac-app/.build/Insta360Sync.app
+
 pwa:
 	./scripts/build-pwa.sh
 
@@ -10,7 +12,11 @@ mac-app-signed: mac-app
 	bash apps/mac-app/scripts/resign-mac-app.sh
 
 run: mac-app
-	open ./apps/mac-app/.build/Insta360Sync.app
+	-pkill -x Insta360Sync
+	@sleep 0.3
+	open "$(APP_BUNDLE)"
 
 run-signed: mac-app-signed
-	open ./apps/mac-app/.build/Insta360Sync.app
+	-pkill -x Insta360Sync
+	@sleep 0.3
+	open "$(APP_BUNDLE)"
