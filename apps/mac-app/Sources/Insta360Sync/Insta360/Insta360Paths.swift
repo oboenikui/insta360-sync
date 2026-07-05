@@ -23,12 +23,12 @@ enum Insta360Paths {
     }
 
     static func localFilename(name: String, storage: String) -> String {
-        if storage.isEmpty || storage == "sd" {
+        if storage.isEmpty || storage == "sd" || storage == "internal" {
             return name
         }
         let filename = name as NSString
         let ext = filename.pathExtension
-        let suffix = storage == "internal" ? "internal" : storage
+        let suffix = storage
         if ext.isEmpty {
             return "\(name)_\(suffix)"
         }
