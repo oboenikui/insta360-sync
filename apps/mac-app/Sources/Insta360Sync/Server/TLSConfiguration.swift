@@ -155,16 +155,20 @@ enum TLSConfiguration {
         let p12Path = directory.appendingPathComponent("server.p12")
 
         if fm.fileExists(atPath: p12Path.path),
-           let stored = loadManifest(from: manifestPath),
-           stored == endpoints,
            let identity = try? importIdentity(from: p12Path) {
-            return identity
-        }
-
-        if storedManifestDiffers(from: manifestPath, current: endpoints) {
+            let stored = loadManifest(from: manifestPath)
+            if !needsRegeneration(stored: stored) {
+                if let stored, stored != endpoints {
+                    AppLogger.shared.debug(
+                        "Reusing TLS certificate despite SAN change " +
+                            "(stored CN=\(stored.commonName), current CN=\(endpoints.commonName))"
+                    )
+                }
+                return identity
+            }
             AppLogger.shared.info(
-                "Regenerating TLS certificate for CN=\(endpoints.commonName) " +
-                    "(SAN DNS=\(endpoints.dnsNames.count), IP=\(endpoints.ipAddresses.count))"
+                "Regenerating TLS certificate for format upgrade " +
+                    "(v\(stored?.formatVersion ?? 0) -> v\(TLSCertificateEndpoints.currentFormatVersion))"
             )
         }
 
@@ -177,9 +181,12 @@ enum TLSConfiguration {
         return try importIdentity(from: p12Path)
     }
 
-    private static func storedManifestDiffers(from path: URL, current: TLSCertificateEndpoints) -> Bool {
-        guard let stored = loadManifest(from: path) else { return false }
-        return stored != current
+    /// 証明書を再生成すべきか。SAN の変化（LAN IP 変更など）では再生成しない。
+    /// クライアントにインストール済みのルート証明書を維持するため。
+    private static func needsRegeneration(stored: TLSCertificateEndpoints?) -> Bool {
+        guard let stored else { return false }
+        let version = stored.formatVersion ?? 0
+        return version < TLSCertificateEndpoints.currentFormatVersion
     }
 
     static func loadManifest(from path: URL) -> TLSCertificateEndpoints? {

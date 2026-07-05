@@ -38,7 +38,10 @@ final class BackupEngine: @unchecked Sendable {
             cameraID: camera.id
         )
 
+        let unavailablePaths = SyncManifestStore.unavailable404Paths(in: manifest)
+
         let listedFiles = try await session.listAllFiles()
+            .filter { !unavailablePaths.contains($0.sourcePath) }
         let files = listedFiles.map { file in
             var updated = file
             updated.isSynced = SyncManifestStore.isSynced(file, manifest: manifest)
@@ -79,6 +82,17 @@ final class BackupEngine: @unchecked Sendable {
                 skipped += 1
                 continue
             case let .download(destination, overwrite):
+                if file.isInferredCompanion {
+                    switch await downloader.probeRemoteFile(url: file.downloadURL) {
+                    case .notFound:
+                        await manifestScheduler.markUnavailable404(file)
+                        skipped += 1
+                        AppLogger.shared.debug("Inferred companion DNG not found: \(file.name)")
+                        continue
+                    case .available, .inconclusive:
+                        break
+                    }
+                }
                 do {
                     _ = try await downloader.download(
                         file: file,
@@ -92,7 +106,7 @@ final class BackupEngine: @unchecked Sendable {
                     if file.storage == "sd",
                        file.name.lowercased().hasSuffix(".jpg"),
                        let rawPath = Insta360Paths.companionRawPath(for: file.sourcePath),
-                       !files.contains(where: { $0.sourcePath == rawPath && $0.isSynced }) {
+                       !files.contains(where: { $0.sourcePath == rawPath }) {
                         try await downloadCompanionRaw(
                             rawPath: rawPath,
                             referenceFile: file,
@@ -100,10 +114,20 @@ final class BackupEngine: @unchecked Sendable {
                             settings: settings,
                             session: session,
                             manifestScheduler: manifestScheduler,
-                            copied: &copied
+                            copied: &copied,
+                            failed: &failed,
+                            failures: &failures
                         )
                     }
                 } catch {
+                    if file.isInferredCompanion, FileDownloader.isHTTPNotFound(error) {
+                        await manifestScheduler.markUnavailable404(file)
+                        skipped += 1
+                        AppLogger.shared.debug(
+                            "Inferred companion DNG not found: \(file.name)"
+                        )
+                        continue
+                    }
                     failed += 1
                     failures.append(
                         BackupFailure(path: file.sourcePath, error: error.localizedDescription)
@@ -151,7 +175,9 @@ final class BackupEngine: @unchecked Sendable {
         settings: AppSettings,
         session: CameraSession,
         manifestScheduler: SyncManifestFlushScheduler,
-        copied: inout Int
+        copied: inout Int,
+        failed: inout Int,
+        failures: inout [BackupFailure]
     ) async throws {
         let rawName = (rawPath as NSString).lastPathComponent
         let rawFile = Insta360CameraFile(
@@ -177,6 +203,17 @@ final class BackupEngine: @unchecked Sendable {
         case .skipAlreadyPresent:
             await manifestScheduler.markSynced(rawFile)
         case let .download(destination, overwrite):
+            if await manifestScheduler.isUnavailable404(sourcePath: rawPath) {
+                return
+            }
+            switch await downloader.probeRemoteFile(url: rawFile.downloadURL) {
+            case .notFound:
+                await manifestScheduler.markUnavailable404(rawFile)
+                AppLogger.shared.debug("Companion DNG not found: \(rawName)")
+                return
+            case .available, .inconclusive:
+                break
+            }
             do {
                 _ = try await downloader.download(
                     file: rawFile,
@@ -187,9 +224,16 @@ final class BackupEngine: @unchecked Sendable {
                 await manifestScheduler.markSynced(rawFile)
                 copied += 1
             } catch {
-                AppLogger.shared.warning(
-                    "Companion DNG skipped for \(rawName): \(error.localizedDescription)"
+                if FileDownloader.isHTTPNotFound(error) {
+                    await manifestScheduler.markUnavailable404(rawFile)
+                    AppLogger.shared.debug("Companion DNG not found: \(rawName)")
+                    return
+                }
+                failed += 1
+                failures.append(
+                    BackupFailure(path: rawPath, error: error.localizedDescription)
                 )
+                AppLogger.shared.error("Download failed for \(rawPath): \(error.localizedDescription)")
             }
         }
     }

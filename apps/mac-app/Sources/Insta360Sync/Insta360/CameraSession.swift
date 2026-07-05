@@ -56,8 +56,49 @@ struct CameraSession: Sendable {
     }
 }
 
+enum RemoteFileProbeResult: Sendable {
+    case available
+    case notFound
+    case inconclusive
+}
+
 final class FileDownloader: Sendable {
     private static let userAgent = "Lavf/60.3.100"
+
+    func probeRemoteFile(url: URL, timeout: TimeInterval = 10) async -> RemoteFileProbeResult {
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        request.httpMethod = "GET"
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("*/*", forHTTPHeaderField: "Accept")
+        request.setValue("close", forHTTPHeaderField: "Connection")
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        request.setValue("1", forHTTPHeaderField: "Icy-MetaData")
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return .inconclusive }
+            switch http.statusCode {
+            case 200, 206:
+                return .available
+            case 404:
+                return .notFound
+            default:
+                return .inconclusive
+            }
+        } catch {
+            return .inconclusive
+        }
+    }
+
+    static func isHTTPNotFound(_ error: Error) -> Bool {
+        if case FileDownloadError.httpStatus(404) = error {
+            return true
+        }
+        if case Insta360ClientError.cameraError(let message) = error {
+            return message.hasPrefix("HTTP 404:")
+        }
+        return false
+    }
 
     func download(
         file: Insta360CameraFile,
