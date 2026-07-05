@@ -17,7 +17,11 @@ struct VAPIDKeys: Sendable {
         )
     }
 
-    func makeJWT(audience: String, subject: String = "mailto:support@insta360-sync.local") throws -> String {
+    /// Apple は `.local` など非標準ドメインの mailto を BadJwtToken で拒否する。
+    func makeJWT(
+        audience: String,
+        subject: String = "https://github.com/oboenikui/insta360-sync"
+    ) throws -> String {
         guard let privateKeyData = Base64URL.decode(privateKeyBase64URL) else {
             throw WebPushError.invalidKeys
         }
@@ -60,13 +64,18 @@ enum Base64URL {
 enum WebPushError: LocalizedError {
     case invalidKeys
     case invalidSubscription
-    case deliveryFailed(Int)
+    case deliveryFailed(Int, String)
 
     var errorDescription: String? {
         switch self {
         case .invalidKeys: "Invalid VAPID keys"
         case .invalidSubscription: "Invalid push subscription"
-        case .deliveryFailed(let code): "Push delivery failed with status \(code)"
+        case .deliveryFailed(let code, let body):
+            if body.isEmpty {
+                "Push delivery failed with status \(code)"
+            } else {
+                "Push delivery failed with status \(code): \(body)"
+            }
         }
     }
 }

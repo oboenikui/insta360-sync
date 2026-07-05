@@ -43,7 +43,10 @@ final class SyncCore {
             appStatus = .running
         } catch {
             appStatus = .error(error.localizedDescription)
-            AppLogger.shared.error("Failed to start HTTPS server: \(error.localizedDescription)")
+            AppLogger.shared.error(
+                "Failed to start HTTPS server: \(error.localizedDescription)",
+                category: .server
+            )
             return
         }
 
@@ -76,12 +79,20 @@ final class SyncCore {
     func registerPushSubscription(_ subscription: PushSubscriptionRecord) {
         if !settings.pushSubscriptions.contains(where: { $0.endpoint == subscription.endpoint }) {
             settings.pushSubscriptions.append(subscription)
+            AppLogger.shared.info(
+                "Push subscription registered (\(settings.pushSubscriptions.count) total)",
+                category: .push
+            )
         }
     }
 
     func handleDetectedCamera(_ camera: CameraProfile) async {
         guard case .running = appStatus else { return }
         guard let pending = pendingStore.createPending(for: camera) else { return }
+        AppLogger.shared.info(
+            "Camera detected, sending push for \(camera.displayName) (\(settings.pushSubscriptions.count) subscriptions)",
+            category: .push
+        )
         let pushSettings = settings
         await webPush.notifyBackupPending(settings: pushSettings, pending: pending)
     }

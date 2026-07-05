@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LocationPermissionBanner: View {
-    private var auth = LocationAuthorization.shared
+    @Bindable private var auth = LocationAuthorization.shared
 
     var body: some View {
         if !auth.isAuthorized {
@@ -11,8 +11,9 @@ struct LocationPermissionBanner: View {
                     .foregroundStyle(.orange)
                 if let title = auth.actionButtonTitle {
                     Button(title) {
-                        auth.requestAuthorization()
+                        LocationAuthorization.shared.requestAuthorization()
                     }
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                 }
             }

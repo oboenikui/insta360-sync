@@ -44,18 +44,24 @@ extension SyncCore {
 
         if request.method == "POST" && path == "/api/push/subscribe" {
             guard authorize(request) else { return HTTPResponse.unauthorized() }
-            guard let body = try? JSONDecoder().decode(PushSubscribeRequest.self, from: request.body) else {
+            do {
+                let body = try JSONDecoder().decode(PushSubscribeRequest.self, from: request.body)
+                registerPushSubscription(
+                    PushSubscriptionRecord(
+                        endpoint: body.endpoint,
+                        p256dh: body.keys.p256dh,
+                        auth: body.keys.auth,
+                        createdAt: Date()
+                    )
+                )
+                return HTTPResponse.json(["ok": true])
+            } catch {
+                AppLogger.shared.warning(
+                    "Push subscribe decode failed (\(request.body.count) bytes): \(error.localizedDescription)",
+                    category: .server
+                )
                 return HTTPResponse.text("bad json", status: 400)
             }
-            registerPushSubscription(
-                PushSubscriptionRecord(
-                    endpoint: body.endpoint,
-                    p256dh: body.keys.p256dh,
-                    auth: body.keys.auth,
-                    createdAt: Date()
-                )
-            )
-            return HTTPResponse.json(["ok": true])
         }
 
         if request.method == "POST" && path == "/api/backup/approve" {

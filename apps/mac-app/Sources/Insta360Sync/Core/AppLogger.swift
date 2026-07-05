@@ -4,21 +4,38 @@ import os
 final class AppLogger: @unchecked Sendable {
     static let shared = AppLogger()
 
-    private let logger = Logger(subsystem: "com.oboenikui.insta360-sync", category: "app")
+    /// Console.app で `subsystem:com.oboenikui.insta360-sync` またはカテゴリで絞り込める。
+    static let subsystem = "com.oboenikui.insta360-sync"
 
-    func info(_ message: String) {
-        logger.info("\(message, privacy: .public)")
+    enum Category: String, Sendable {
+        case app
+        case server
+        case push
     }
 
-    func warning(_ message: String) {
-        logger.warning("\(message, privacy: .public)")
+    private let loggers: [Category: Logger]
+
+    private init() {
+        loggers = Dictionary(uniqueKeysWithValues: Category.allCases.map { category in
+            (category, Logger(subsystem: Self.subsystem, category: category.rawValue))
+        })
     }
 
-    func error(_ message: String) {
-        logger.error("\(message, privacy: .public)")
+    func info(_ message: String, category: Category = .app) {
+        loggers[category]?.info("\(message, privacy: .public)")
     }
 
-    func debug(_ message: String) {
-        logger.debug("\(message, privacy: .public)")
+    func warning(_ message: String, category: Category = .app) {
+        loggers[category]?.warning("\(message, privacy: .public)")
+    }
+
+    func error(_ message: String, category: Category = .app) {
+        loggers[category]?.error("\(message, privacy: .public)")
+    }
+
+    func debug(_ message: String, category: Category = .app) {
+        loggers[category]?.debug("\(message, privacy: .public)")
     }
 }
+
+extension AppLogger.Category: CaseIterable {}

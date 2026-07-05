@@ -22,7 +22,10 @@ final class WebPushService: Sendable {
     }
 
     private func send(settings: AppSettings, payload: [String: Any]) async {
-        guard !settings.pushSubscriptions.isEmpty else { return }
+        guard !settings.pushSubscriptions.isEmpty else {
+            AppLogger.shared.warning("Web push skipped: no subscriptions registered", category: .push)
+            return
+        }
         let keys = VAPIDKeys(
             publicKeyBase64URL: settings.vapidPublicKey,
             privateKeyBase64URL: settings.vapidPrivateKey
@@ -31,10 +34,22 @@ final class WebPushService: Sendable {
         for subscription in settings.pushSubscriptions {
             do {
                 try await sendOne(subscription: subscription, keys: keys, payload: payload)
+                AppLogger.shared.info(
+                    "Web push delivered to \(pushEndpointLabel(subscription.endpoint))",
+                    category: .push
+                )
             } catch {
-                AppLogger.shared.warning("Web push failed: \(error.localizedDescription)")
+                AppLogger.shared.warning(
+                    "Web push failed for \(pushEndpointLabel(subscription.endpoint)): \(error.localizedDescription)",
+                    category: .push
+                )
             }
         }
+    }
+
+    private func pushEndpointLabel(_ endpoint: String) -> String {
+        guard let host = URL(string: endpoint)?.host else { return endpoint }
+        return host
     }
 
     private func sendOne(
@@ -65,11 +80,12 @@ final class WebPushService: Sendable {
         request.setValue("aes128gcm", forHTTPHeaderField: "Content-Encoding")
         request.setValue("86400", forHTTPHeaderField: "TTL")
         request.setValue("vapid t=\(jwt), k=\(keys.publicKeyBase64URL)", forHTTPHeaderField: "Authorization")
-        request.setValue(encrypted.encryptionHeader, forHTTPHeaderField: "Encryption")
 
-        let (_, response) = try await URLSession.shared.data(for: request)
+        let (responseBody, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode) else {
-            throw WebPushError.deliveryFailed((response as? HTTPURLResponse)?.statusCode ?? -1)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let bodyText = String(data: responseBody, encoding: .utf8) ?? ""
+            throw WebPushError.deliveryFailed(status, bodyText)
         }
     }
 }
@@ -77,7 +93,6 @@ final class WebPushService: Sendable {
 private enum WebPushEncryption {
     struct Result {
         var body: Data
-        var encryptionHeader: String
     }
 
     static func encrypt(payload: Data, recipientPublicKey: Data, authSecret: Data) throws -> Result {
@@ -110,7 +125,8 @@ private enum WebPushEncryption {
             outputByteCount: 12
         )
         let nonce = try AES.GCM.Nonce(data: nonceKey.withUnsafeBytes { Data($0) })
-        let padded = Data([0]) + payload
+        // RFC 8291: aes128gcm の padding delimiter は 0x02 必須（0x00 だと iOS が破棄する）
+        let padded = Data([0x02]) + payload
         let sealed = try AES.GCM.seal(padded, using: contentKey, nonce: nonce)
         let ciphertext = sealed.ciphertext
         let tag = sealed.tag
@@ -124,7 +140,7 @@ private enum WebPushEncryption {
         body.append(ciphertext)
         body.append(tag)
 
-        return Result(body: body, encryptionHeader: "salt=\(Base64URL.encode(salt))")
+        return Result(body: body)
     }
 
     private static func randomData(count: Int) -> Data {

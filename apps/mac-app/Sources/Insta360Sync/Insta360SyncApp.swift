@@ -4,6 +4,7 @@ import SwiftUI
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        AppLogger.shared.info("Insta360 Sync launched", category: .app)
         Task { @MainActor in
             LocationAuthorization.shared.refreshAuthorization()
         }
