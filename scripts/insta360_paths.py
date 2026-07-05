@@ -27,11 +27,7 @@ def storage_from_path(path: str) -> str:
 
 
 def local_filename(name: str, storage: str) -> str:
-    if storage in ("", "sd", "internal"):
-        return name
-    stem, dot, ext = name.rpartition(".")
-    suffix = storage
-    return f"{stem}_{suffix}.{ext}" if dot else f"{name}_{suffix}"
+    return name
 
 
 def display_label(storage: str) -> str:
