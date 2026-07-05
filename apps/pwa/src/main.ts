@@ -48,85 +48,127 @@ type PublicSettings = {
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
+let latestCertificateInfo: CertificateInfo | null = null;
+type View = "main" | "settings";
+
 function renderShell() {
   app.innerHTML = `
     <main class="container">
-      <header>
-        <h1>Insta360 Sync</h1>
-        <p class="muted">Mac からのバックアップ承認</p>
+      <header class="app-header">
+        <div>
+          <h1>Insta360 Sync</h1>
+          <p class="muted">Mac からのバックアップ承認</p>
+        </div>
+        <button id="openSettings" class="icon-button" type="button" aria-label="設定">
+          <span aria-hidden="true">⚙</span>
+        </button>
       </header>
 
-      <section class="card">
-        <h2>ペアリング</h2>
-        <label>Mac HTTPS URL<input id="baseUrl" type="url" placeholder="https://your-mac.local:9443" /></label>
-        <label>API トークン<input id="apiToken" type="text" placeholder="Mac アプリに表示されたトークン" /></label>
-        <button id="savePairing">保存</button>
-        <button id="enablePush">Push 通知を有効化</button>
-        <p id="pairingStatus" class="muted"></p>
-      </section>
+      <div id="mainView" class="view">
+        <section class="card">
+          <h2>承認待ち</h2>
+          <div id="pendingList"></div>
+        </section>
 
-      <section class="card">
-        <h2>承認待ち</h2>
-        <div id="pendingList"></div>
-      </section>
+        <section class="card">
+          <h2>進捗</h2>
+          <pre id="progressBox" class="mono"></pre>
+        </section>
 
-      <section class="card">
-        <h2>進捗</h2>
-        <pre id="progressBox" class="mono"></pre>
-      </section>
+        <section class="card">
+          <h2>履歴</h2>
+          <div id="historyList"></div>
+        </section>
+      </div>
 
-      <section class="card">
-        <h2>履歴</h2>
-        <div id="historyList"></div>
-      </section>
-
-      <section class="card">
-        <h2>ルート証明書</h2>
-        <p class="muted">
-          Mac が生成した自己署名ルート証明書を iOS / Android にインストールすると、ブラウザや PWA が
-          この Mac の HTTPS を「信頼済み」として扱えるようになります。証明書は Mac にのみ保存され、
-          他の端末には配布されません。
-        </p>
-        <div id="certificateSummary" class="muted">証明書情報を取得しています…</div>
-        <div class="cert-actions">
-          <a id="downloadMobileConfig" class="button-link" href="#" rel="noopener">
-            iOS: 構成プロファイル (.mobileconfig)
-          </a>
-          <a id="downloadCrt" class="button-link secondary" href="#" rel="noopener">
-            Android: 証明書 (.crt)
-          </a>
-          <button id="copyPem" class="secondary" type="button">PEM をコピー</button>
+      <div id="settingsView" class="view" hidden>
+        <div class="settings-header">
+          <button id="closeSettings" class="icon-button" type="button" aria-label="戻る">
+            <span aria-hidden="true">←</span>
+          </button>
+          <h2>設定</h2>
         </div>
-        <p id="certificateStatus" class="muted"></p>
-        <details class="cert-help">
-          <summary>インストール手順</summary>
-          <div class="cert-help-body">
-            <h3>iOS / iPadOS</h3>
-            <ol>
-              <li>Safari で「iOS: 構成プロファイル」ボタンをタップして .mobileconfig を開きます。</li>
-              <li>「設定 → 一般 → VPN とデバイス管理」からダウンロード済みプロファイルを開き、
-                インストールします。</li>
-              <li>「設定 → 一般 → 情報 → 証明書信頼設定」で当該証明書のスイッチをオンにします
-                （フル信頼の有効化）。</li>
-              <li>Safari を再読み込みし、鍵アイコンが警告なしになれば完了です。</li>
-            </ol>
-            <h3>Android</h3>
-            <ol>
-              <li>Chrome で「Android: 証明書 (.crt)」ボタンをタップしてダウンロードします。</li>
-              <li>「設定 → セキュリティとプライバシー → その他 → 暗号化と認証情報 → 証明書のインストール
-                → CA 証明書」を選択します（機種により表記が異なる場合があります）。</li>
-              <li>ダウンロードしたファイルを選択して「ユーザーによりインストールされた CA 証明書」として保存します。</li>
-              <li>Chrome を再起動すると信頼されます（一部のアプリはユーザー CA を信頼しないことがあります）。</li>
-            </ol>
-            <p class="muted">
-              フィンガープリント (SHA-256) が Mac 設定画面と一致していることを確認してからインストールしてください。
-            </p>
+
+        <section class="card">
+          <h3>ペアリング</h3>
+          <label>Mac HTTPS URL<input id="baseUrl" type="url" placeholder="https://your-mac.local:9443" /></label>
+          <label>API トークン<input id="apiToken" type="text" placeholder="Mac アプリに表示されたトークン" /></label>
+          <div class="settings-actions">
+            <button id="savePairing" type="button">保存</button>
+            <button id="enablePush" type="button" class="secondary">Push 通知を有効化</button>
           </div>
-        </details>
-      </section>
+          <p id="pairingStatus" class="muted"></p>
+        </section>
+
+        <section class="card">
+          <h3>ルート証明書</h3>
+          <p class="muted">
+            Mac が生成した自己署名ルート証明書を端末にインストールすると、ブラウザや PWA が
+            この Mac の HTTPS を「信頼済み」として扱えるようになります。一度信頼設定を有効に
+            すれば、以降このセクションを開く必要はありません。
+          </p>
+          <div id="certificateSummary" class="muted">証明書情報を取得しています…</div>
+          <div class="cert-actions">
+            <a id="downloadCrt" class="button-link" href="#" rel="noopener">
+              証明書をダウンロード (.crt)
+            </a>
+            <button id="copyPem" class="secondary" type="button">PEM をコピー</button>
+          </div>
+          <p id="certificateStatus" class="muted"></p>
+          <details class="cert-help">
+            <summary>インストール手順</summary>
+            <div class="cert-help-body">
+              <h4>iOS / iPadOS</h4>
+              <ol>
+                <li>Safari で「証明書をダウンロード」ボタンをタップし、プロファイルをダウンロードします。</li>
+                <li>設定 → 一般 → VPN とデバイス管理 → ダウンロードされたプロファイル
+                  を開き、インストールします。</li>
+                <li>設定 → 一般 → 情報 → 証明書信頼設定 で当該証明書のスイッチをオンに
+                  します（フル信頼の有効化）。</li>
+                <li>Safari を再読み込みし、鍵アイコンが警告なしになれば完了です。</li>
+              </ol>
+              <h4>Android</h4>
+              <ol>
+                <li>Chrome で「証明書をダウンロード」ボタンをタップしてファイルを保存します。</li>
+                <li>設定 → セキュリティとプライバシー → その他 → 暗号化と認証情報 →
+                  証明書のインストール → CA 証明書 を選択します（機種により表記が異なる場合があります）。</li>
+                <li>ダウンロードしたファイルを選択し「ユーザーによりインストールされた CA 証明書」
+                  として保存します。</li>
+                <li>Chrome を再起動すると信頼されます（一部のアプリはユーザー CA を信頼しない
+                  ことがあります）。</li>
+              </ol>
+              <p class="muted">
+                フィンガープリント (SHA-256) が Mac 設定画面と一致していることを確認してから
+                インストールしてください。
+              </p>
+            </div>
+          </details>
+        </section>
+      </div>
     </main>
   `;
 
+  document.querySelector<HTMLButtonElement>("#openSettings")!.onclick = () => {
+    showView("settings");
+  };
+  document.querySelector<HTMLButtonElement>("#closeSettings")!.onclick = () => {
+    showView("main");
+  };
+
+  setupPairingSection();
+  setupCertificateSection();
+}
+
+function showView(view: View) {
+  document.querySelector<HTMLDivElement>("#mainView")!.hidden = view !== "main";
+  document.querySelector<HTMLDivElement>("#settingsView")!.hidden = view !== "settings";
+  document.querySelector<HTMLButtonElement>("#openSettings")!.hidden = view !== "main";
+  if (view === "settings") {
+    void refreshCertificate();
+  }
+}
+
+function setupPairingSection() {
   const baseUrlInput = document.querySelector<HTMLInputElement>("#baseUrl")!;
   const apiTokenInput = document.querySelector<HTMLInputElement>("#apiToken")!;
   baseUrlInput.value = getBaseURL();
@@ -138,8 +180,6 @@ function renderShell() {
     setStatus("ペアリング情報を保存しました");
     void refreshCertificate();
   };
-
-  setupCertificateSection();
 
   document.querySelector<HTMLButtonElement>("#enablePush")!.onclick = async () => {
     try {
@@ -175,26 +215,17 @@ function setCertificateStatus(message: string) {
   if (el) el.textContent = message;
 }
 
-let latestCertificateInfo: CertificateInfo | null = null;
-
 function setupCertificateSection() {
-  const mobileConfigLink =
-    document.querySelector<HTMLAnchorElement>("#downloadMobileConfig")!;
   const crtLink = document.querySelector<HTMLAnchorElement>("#downloadCrt")!;
   const copyButton = document.querySelector<HTMLButtonElement>("#copyPem")!;
 
   const applyLinks = () => {
-    mobileConfigLink.href = certificateDownloadURL("mobileconfig");
     crtLink.href = certificateDownloadURL("crt");
     if (latestCertificateInfo) {
-      const baseName = latestCertificateInfo.downloadBaseName;
-      mobileConfigLink.setAttribute("download", `${baseName}.mobileconfig`);
-      crtLink.setAttribute("download", `${baseName}.crt`);
+      crtLink.setAttribute("download", `${latestCertificateInfo.downloadBaseName}.crt`);
     }
   };
   applyLinks();
-
-  mobileConfigLink.addEventListener("click", applyLinks);
   crtLink.addEventListener("click", applyLinks);
 
   copyButton.addEventListener("click", async () => {
@@ -206,47 +237,30 @@ function setupCertificateSection() {
       await navigator.clipboard.writeText(latestCertificateInfo.pem);
       setCertificateStatus("PEM をクリップボードにコピーしました。");
     } catch (error) {
-      setCertificateStatus(
-        `コピーに失敗しました: ${(error as Error).message}`
-      );
+      setCertificateStatus(`コピーに失敗しました: ${(error as Error).message}`);
     }
   });
-
-  void refreshCertificate();
 }
 
 async function refreshCertificate() {
-  const summary = document.querySelector<HTMLDivElement>(
-    "#certificateSummary"
-  );
+  const summary = document.querySelector<HTMLDivElement>("#certificateSummary");
   if (!summary) return;
   try {
     const info = await fetchCertificateInfo();
     latestCertificateInfo = info;
     summary.innerHTML = renderCertificateSummary(info);
-    const mobileConfigLink =
-      document.querySelector<HTMLAnchorElement>("#downloadMobileConfig");
     const crtLink = document.querySelector<HTMLAnchorElement>("#downloadCrt");
-    if (mobileConfigLink) {
-      mobileConfigLink.setAttribute(
-        "download",
-        `${info.downloadBaseName}.mobileconfig`
-      );
-    }
     if (crtLink) {
       crtLink.setAttribute("download", `${info.downloadBaseName}.crt`);
     }
   } catch (error) {
-    summary.textContent = `証明書情報の取得に失敗しました: ${
-      (error as Error).message
-    }`;
+    summary.textContent = `証明書情報の取得に失敗しました: ${(error as Error).message}`;
   }
 }
 
 function renderCertificateSummary(info: CertificateInfo): string {
   const dns = info.dnsNames.length > 0 ? info.dnsNames.join(", ") : "(なし)";
-  const ips =
-    info.ipAddresses.length > 0 ? info.ipAddresses.join(", ") : "(なし)";
+  const ips = info.ipAddresses.length > 0 ? info.ipAddresses.join(", ") : "(なし)";
   const notBefore = formatDate(info.notBefore);
   const notAfter = formatDate(info.notAfter);
   return `
@@ -295,7 +309,8 @@ async function refresh() {
 }
 
 function renderPending(items: PendingBackup[]) {
-  const container = document.querySelector<HTMLDivElement>("#pendingList")!;
+  const container = document.querySelector<HTMLDivElement>("#pendingList");
+  if (!container) return;
   if (items.length === 0) {
     container.innerHTML = `<p class="muted">承認待ちはありません</p>`;
     return;
@@ -340,7 +355,8 @@ function renderPending(items: PendingBackup[]) {
 }
 
 function renderProgress(status: BackupStatus) {
-  const box = document.querySelector<HTMLPreElement>("#progressBox")!;
+  const box = document.querySelector<HTMLPreElement>("#progressBox");
+  if (!box) return;
   if (!status.progress) {
     box.textContent = `状態: ${status.status}`;
     return;
@@ -349,7 +365,8 @@ function renderProgress(status: BackupStatus) {
 }
 
 function renderHistory(history: BackupStatus["history"]) {
-  const container = document.querySelector<HTMLDivElement>("#historyList")!;
+  const container = document.querySelector<HTMLDivElement>("#historyList");
+  if (!container) return;
   if (history.length === 0) {
     container.innerHTML = `<p class="muted">履歴はまだありません</p>`;
     return;
@@ -371,6 +388,10 @@ function handleDeepLink() {
   const pendingId = params.get("pendingBackup");
   if (pendingId) {
     setStatus(`通知から開きました: ${pendingId}`);
+  }
+  // 初回起動 (API トークン未設定) の場合は設定画面を最初に開く。
+  if (!getApiToken()) {
+    showView("settings");
   }
 }
 

@@ -81,6 +81,71 @@ button.secondary {
   gap: 8px;
 }
 
+.app-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.app-header p {
+  margin: 4px 0 0;
+}
+
+.icon-button {
+  border: 0;
+  border-radius: 10px;
+  background: #1f2937;
+  color: #e2e8f0;
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+  line-height: 40px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: #334155;
+}
+
+.view {
+  display: grid;
+  gap: 16px;
+}
+
+.view[hidden] {
+  display: none;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #f8fafc;
+}
+
 .cert-actions {
   display: flex;
   flex-wrap: wrap;
@@ -151,7 +216,8 @@ button.secondary {
   gap: 8px;
 }
 
-.cert-help-body h3 {
+.cert-help-body h3,
+.cert-help-body h4 {
   margin: 8px 0 0;
   font-size: 14px;
   color: #f8fafc;
