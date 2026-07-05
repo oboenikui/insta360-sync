@@ -40,7 +40,9 @@ struct TLSCertificateEndpoints: Codable, Equatable {
                 ips.insert(address)
                 continue
             }
-            if Self.isPrivateIPv4(address) || Self.isLANIPv6(address) {
+            // LAN のプライベート IPv4 のみ。変動するグローバル IPv6 は SAN に入れない
+            // （証明書が頻繁に再生成され、iOS が信頼を失うため）。
+            if Self.isPrivateIPv4(address) {
                 ips.insert(address)
             }
         }
@@ -95,11 +97,6 @@ struct TLSCertificateEndpoints: Codable, Equatable {
         default:
             return false
         }
-    }
-
-    private static func isLANIPv6(_ address: String) -> Bool {
-        if address.hasPrefix("fe80:") { return false }
-        return address.contains(":")
     }
 }
 

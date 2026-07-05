@@ -30,8 +30,41 @@ struct HTTPRequest {
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
             headers[key] = value
         }
-        let body = data.subdata(in: sepRange.upperBound ..< data.endIndex)
+        let rawBody = data.subdata(in: sepRange.upperBound ..< data.endIndex)
+        let body: Data
+        if let contentLengthHeader = headers["content-length"],
+           let contentLength = Int(contentLengthHeader) {
+            body = rawBody.prefix(contentLength)
+        } else {
+            body = rawBody
+        }
         return HTTPRequest(method: method, path: path, headers: headers, body: body)
+    }
+
+    static func hasCompleteMessage(_ data: Data) -> Bool {
+        let sep = Data("\r\n\r\n".utf8)
+        guard let sepRange = data.range(of: sep) else { return false }
+        let bodyStartOffset = data.distance(from: data.startIndex, to: sepRange.upperBound)
+        let bodyLength = data.count - bodyStartOffset
+        guard let contentLengthHeader = contentLength(in: data) else {
+            return true
+        }
+        return bodyLength >= contentLengthHeader
+    }
+
+    static func contentLength(in data: Data) -> Int? {
+        let sep = Data("\r\n\r\n".utf8)
+        guard let sepRange = data.range(of: sep) else { return nil }
+        let headerData = data.subdata(in: data.startIndex ..< sepRange.lowerBound)
+        guard let str = String(data: headerData, encoding: .utf8) else { return nil }
+        for line in str.split(separator: "\r\n").dropFirst() {
+            let lower = line.lowercased()
+            guard lower.hasPrefix("content-length:") else { continue }
+            let value = line.dropFirst("content-length:".count)
+                .trimmingCharacters(in: .whitespaces)
+            return Int(value)
+        }
+        return nil
     }
 }
 
@@ -94,10 +127,12 @@ func receiveHTTPRequest(
     _ connection: NWConnection,
     accumulated: Data,
     maxTotal: Int,
-    completion: @escaping @Sendable (HTTPRequest) -> Void
+    completion: @escaping @Sendable (HTTPRequest) -> Void,
+    onFailure: (@Sendable (String) -> Void)? = nil
 ) {
     connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
-        if error != nil {
+        if let error {
+            onFailure?("HTTP receive failed: \(error.localizedDescription)")
             connection.cancel()
             return
         }
@@ -106,17 +141,29 @@ func receiveHTTPRequest(
             buffer.append(data)
         }
         if buffer.count > maxTotal {
+            onFailure?("HTTP request exceeded \(maxTotal) bytes")
             connection.cancel()
             return
         }
-        if let request = HTTPRequest.parse(buffer) {
+        if HTTPRequest.hasCompleteMessage(buffer), let request = HTTPRequest.parse(buffer) {
             completion(request)
             return
         }
         if isComplete {
+            if let request = HTTPRequest.parse(buffer) {
+                completion(request)
+                return
+            }
+            onFailure?("HTTP request incomplete or malformed (\(buffer.count) bytes)")
             connection.cancel()
             return
         }
-        receiveHTTPRequest(connection, accumulated: buffer, maxTotal: maxTotal, completion: completion)
+        receiveHTTPRequest(
+            connection,
+            accumulated: buffer,
+            maxTotal: maxTotal,
+            completion: completion,
+            onFailure: onFailure
+        )
     }
 }
