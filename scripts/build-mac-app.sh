@@ -16,6 +16,13 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$MAC_APP/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+
+# `cp -R src dst` は dst が既存だと src を dst の中に入れてしまうため、
+# 事前に削除してから丸ごとコピーする。これをしないと再ビルド時に
+# 古い assets（別ハッシュのファイル名）が残り続けて index.html の参照と
+# ズレが生じる。
+rm -rf "$APP_BUNDLE/Contents/Resources/public"
+rm -rf "$APP_BUNDLE/Contents/Resources/ucd2"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/public" "$APP_BUNDLE/Contents/Resources/public"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/ucd2" "$APP_BUNDLE/Contents/Resources/ucd2"
 
