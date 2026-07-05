@@ -120,7 +120,8 @@ enum Insta360Paths {
                     createdAt: file.createdAt,
                     name: name,
                     storage: "sd",
-                    captureTime: file.captureTime
+                    captureTime: file.captureTime,
+                    isInferredCompanion: true
                 )
             )
         }

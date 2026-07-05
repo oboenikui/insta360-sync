@@ -34,6 +34,8 @@ struct Insta360CameraFile: Sendable {
     var storage: String
     var captureTime: Int64?
     var isSynced: Bool
+    /// カメラ一覧に無く、SD JPG から推定した companion DNG。
+    var isInferredCompanion: Bool
 
     init(
         sourcePath: String,
@@ -43,7 +45,8 @@ struct Insta360CameraFile: Sendable {
         name: String = "",
         storage: String = "sd",
         captureTime: Int64? = nil,
-        isSynced: Bool = false
+        isSynced: Bool = false,
+        isInferredCompanion: Bool = false
     ) {
         self.sourcePath = sourcePath
         self.downloadURL = downloadURL
@@ -57,6 +60,7 @@ struct Insta360CameraFile: Sendable {
         }
         self.captureTime = captureTime ?? Insta360MediaProto.captureTimeFromFilename(self.name)
         self.isSynced = isSynced
+        self.isInferredCompanion = isInferredCompanion
     }
 
     var displayName: String {
