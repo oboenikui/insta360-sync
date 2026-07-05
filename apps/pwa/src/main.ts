@@ -37,6 +37,7 @@ type BackupStatus = {
     skippedCount: number;
     failedCount: number;
     message?: string;
+    failures?: Array<{ path: string; error: string }>;
   }>;
 };
 
@@ -315,11 +316,34 @@ function renderHistory(history: BackupStatus["history"]) {
   replaceChildren(
     container,
     ...history.slice(0, 10).map((entry) => {
-      const stats = el("div", {
-        className: "muted",
-        textContent: `新規 ${entry.copiedCount} / スキップ ${entry.skippedCount} / 失敗 ${entry.failedCount}`,
-      });
-      return el("article", { className: "history-item" }, el("strong", { textContent: entry.cameraName }), stats);
+      const children: HTMLElement[] = [
+        el("strong", { textContent: entry.cameraName }),
+        el("div", {
+          className: "muted",
+          textContent: `新規 ${entry.copiedCount} / スキップ ${entry.skippedCount} / 失敗 ${entry.failedCount}`,
+        }),
+      ];
+
+      if (entry.failures && entry.failures.length > 0) {
+        children.push(
+          el(
+            "ul",
+            { className: "failure-list" },
+            ...entry.failures.map((failure) =>
+              el(
+                "li",
+                { className: "failure-item" },
+                el("span", { className: "failure-path mono", textContent: failure.path }),
+                el("span", { className: "failure-error muted", textContent: failure.error })
+              )
+            )
+          )
+        );
+      } else if (entry.message && !entry.message.startsWith("protocol=")) {
+        children.push(el("div", { className: "failure-item mono", textContent: entry.message }));
+      }
+
+      return el("article", { className: "history-item" }, ...children);
     })
   );
 }

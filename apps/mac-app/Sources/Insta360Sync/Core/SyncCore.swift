@@ -166,7 +166,8 @@ final class SyncCore {
                     copiedCount: result.copiedCount,
                     skippedCount: result.skippedCount,
                     failedCount: result.failedCount,
-                    message: "protocol=\(result.protocolKind.rawValue)"
+                    message: "protocol=\(result.protocolKind.rawValue)",
+                    failures: result.failures
                 ),
                 at: 0
             )

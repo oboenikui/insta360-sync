@@ -4,6 +4,7 @@ struct BackupResult: Sendable {
     var copiedCount: Int
     var skippedCount: Int
     var failedCount: Int
+    var failures: [BackupFailure]
     var protocolKind: CameraProtocolKind
 }
 
@@ -47,6 +48,7 @@ final class BackupEngine: @unchecked Sendable {
         var copied = 0
         var skipped = 0
         var failed = 0
+        var failures: [BackupFailure] = []
 
         for (index, file) in files.enumerated() {
             progress(
@@ -103,6 +105,9 @@ final class BackupEngine: @unchecked Sendable {
                     }
                 } catch {
                     failed += 1
+                    failures.append(
+                        BackupFailure(path: file.sourcePath, error: error.localizedDescription)
+                    )
                     AppLogger.shared.error("Download failed for \(file.sourcePath): \(error.localizedDescription)")
                 }
             }
@@ -134,6 +139,7 @@ final class BackupEngine: @unchecked Sendable {
             copiedCount: copied,
             skippedCount: skipped,
             failedCount: failed,
+            failures: failures,
             protocolKind: session.kind
         )
     }
