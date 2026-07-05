@@ -83,16 +83,35 @@ insta360-sync/
 
 ## API（Mac HTTPS サーバー）
 
-| エンドポイント | 説明 |
-|---|---|
-| `GET /api/settings` | 公開設定 + VAPID 公開鍵 |
-| `POST /api/push/subscribe` | Push Subscription 登録 |
-| `GET /api/backup/pending` | 承認待ち一覧 |
-| `POST /api/backup/approve` | バックアップ開始 |
-| `POST /api/backup/skip` | スキップ |
-| `GET /api/backup/status` | 進捗・履歴 |
+| エンドポイント | 認証 | 説明 |
+|---|---|---|
+| `GET /api/public/vapid` | 不要 | VAPID 公開鍵 |
+| `GET /api/public/certificate` | 不要 | ルート証明書情報（CN/SAN/フィンガープリント/有効期限/PEM） |
+| `GET /api/public/certificate.pem` | 不要 | PEM 形式の証明書 (`.crt` としてダウンロード) |
+| `GET /api/public/certificate.crt` | 不要 | Android 向けの `.crt`（`.pem` と同じ内容） |
+| `GET /api/public/certificate.der` | 不要 | DER 形式（バイナリ） |
+| `GET /api/public/certificate.mobileconfig` | 不要 | iOS/iPadOS/macOS 向け構成プロファイル |
+| `GET /api/settings` | Bearer | 公開設定 + VAPID 公開鍵 |
+| `POST /api/push/subscribe` | Bearer | Push Subscription 登録 |
+| `GET /api/backup/pending` | Bearer | 承認待ち一覧 |
+| `POST /api/backup/approve` | Bearer | バックアップ開始 |
+| `POST /api/backup/skip` | Bearer | スキップ |
+| `GET /api/backup/status` | Bearer | 進捗・履歴 |
 
 認証: `Authorization: Bearer {apiToken}`
+
+### ルート証明書のインストール
+
+PWA トップの「ルート証明書」セクションから、iOS/iPadOS 用の `.mobileconfig`
+または Android 用の `.crt` をダウンロードできます。フィンガープリント (SHA-256)
+を照合し、以下の手順でインストールしてください。
+
+- **iOS/iPadOS**: Safari で `.mobileconfig` を開く → 設定 → 一般 → VPN と
+  デバイス管理 → プロファイルをインストール → 設定 → 一般 → 情報 → 証明書
+  信頼設定 でフル信頼を有効化。
+- **Android**: Chrome で `.crt` をダウンロード → 設定 → セキュリティと
+  プライバシー → 暗号化と認証情報 → 証明書のインストール → CA 証明書 として
+  インポート。
 
 ## カメラ側
 
