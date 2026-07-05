@@ -6,6 +6,7 @@ apps/mac-app/.build/
 apps/pwa/node_modules/
 apps/pwa/dist/
 apps/pwa/build/
+apps/mac-app/Sources/Insta360Sync/Resources/public/
 *.pem
 *.p12
 .vapid-keys.json
