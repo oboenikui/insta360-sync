@@ -84,6 +84,28 @@ enum HTTPResponse {
         response(status: status, contentType: contentType, body: body)
     }
 
+    /// 添付ファイルとしてダウンロードさせる用途。`fileName` は Content-Disposition に付与される。
+    static func attachment(
+        _ body: Data,
+        contentType: String,
+        fileName: String,
+        status: Int = 200
+    ) -> Data {
+        let sanitized = fileName
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+        return response(
+            status: status,
+            contentType: contentType,
+            body: body,
+            extraHeaders: [
+                ("Content-Disposition", "attachment; filename=\"\(sanitized)\""),
+                ("Cache-Control", "no-store"),
+            ]
+        )
+    }
+
     static func options() -> Data {
         response(status: 204, contentType: "text/plain", body: Data())
     }
@@ -96,7 +118,12 @@ enum HTTPResponse {
         text("unauthorized", status: 401)
     }
 
-    private static func response(status: Int, contentType: String, body: Data) -> Data {
+    private static func response(
+        status: Int,
+        contentType: String,
+        body: Data,
+        extraHeaders: [(String, String)] = []
+    ) -> Data {
         var response = "HTTP/1.1 \(status) \(statusText(status))\r\n"
         response += "Content-Type: \(contentType)\r\n"
         response += "Content-Length: \(body.count)\r\n"
@@ -104,6 +131,9 @@ enum HTTPResponse {
         response += "Access-Control-Allow-Origin: *\r\n"
         response += "Access-Control-Allow-Headers: Authorization, Content-Type\r\n"
         response += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        for (name, value) in extraHeaders {
+            response += "\(name): \(value)\r\n"
+        }
         response += "\r\n"
         var data = response.data(using: .utf8) ?? Data()
         data.append(body)

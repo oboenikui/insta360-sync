@@ -104,6 +104,24 @@ enum TLSConfiguration {
     /// macOS の SecPKCS12Import は空パスワードの .p12 を拒否するため、ローカル用途の固定値を使う。
     private static let p12Passphrase = "insta360-sync-local-tls"
 
+    /// TLS 証明書・秘密鍵・SAN マニフェストを保存するディレクトリ。
+    static var storageDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Insta360Sync/tls", isDirectory: true)
+    }
+
+    static var certificatePEMURL: URL {
+        storageDirectory.appendingPathComponent("server.crt")
+    }
+
+    static var manifestURL: URL {
+        storageDirectory.appendingPathComponent("san-manifest.json")
+    }
+
+    static func loadStoredEndpoints() -> TLSCertificateEndpoints? {
+        loadManifest(from: manifestURL)
+    }
+
     static func makeServerParameters(identity: SecIdentity) -> NWParameters {
         let tlsOptions = NWProtocolTLS.Options()
         guard let secIdentity = sec_identity_create(identity) else {
@@ -154,7 +172,7 @@ enum TLSConfiguration {
         return stored != current
     }
 
-    private static func loadManifest(from path: URL) -> TLSCertificateEndpoints? {
+    static func loadManifest(from path: URL) -> TLSCertificateEndpoints? {
         guard let data = try? Data(contentsOf: path) else { return nil }
         return try? JSONDecoder().decode(TLSCertificateEndpoints.self, from: data)
     }
