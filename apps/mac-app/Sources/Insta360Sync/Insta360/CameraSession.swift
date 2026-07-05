@@ -123,7 +123,7 @@ final class FileDownloader: Sendable {
                 if useRange {
                     continue
                 }
-                throw Insta360ClientError.cameraError("保存失敗 (\(file.localName)): \(error.localizedDescription)")
+                throw Insta360ClientError.cameraError("保存失敗 (\(file.name)): \(error.localizedDescription)")
             }
         }
 

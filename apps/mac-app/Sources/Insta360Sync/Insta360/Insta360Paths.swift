@@ -22,19 +22,6 @@ enum Insta360Paths {
         return "sd"
     }
 
-    static func localFilename(name: String, storage: String) -> String {
-        if storage.isEmpty || storage == "sd" {
-            return name
-        }
-        let filename = name as NSString
-        let ext = filename.pathExtension
-        let suffix = storage == "internal" ? "internal" : storage
-        if ext.isEmpty {
-            return "\(name)_\(suffix)"
-        }
-        return "\(filename.deletingPathExtension)_\(suffix).\(ext)"
-    }
-
     static func displayLabel(storage: String) -> String {
         switch storage {
         case "sd":
