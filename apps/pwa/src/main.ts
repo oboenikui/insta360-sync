@@ -1,10 +1,13 @@
 import {
   apiFetch,
+  certificateDownloadURL,
+  fetchCertificateInfo,
   getApiToken,
   getBaseURL,
   registerPush,
   setApiToken,
   setBaseURL,
+  type CertificateInfo,
 } from "./api";
 import "./style.css";
 
@@ -76,6 +79,51 @@ function renderShell() {
         <h2>履歴</h2>
         <div id="historyList"></div>
       </section>
+
+      <section class="card">
+        <h2>ルート証明書</h2>
+        <p class="muted">
+          Mac が生成した自己署名ルート証明書を iOS / Android にインストールすると、ブラウザや PWA が
+          この Mac の HTTPS を「信頼済み」として扱えるようになります。証明書は Mac にのみ保存され、
+          他の端末には配布されません。
+        </p>
+        <div id="certificateSummary" class="muted">証明書情報を取得しています…</div>
+        <div class="cert-actions">
+          <a id="downloadMobileConfig" class="button-link" href="#" rel="noopener">
+            iOS: 構成プロファイル (.mobileconfig)
+          </a>
+          <a id="downloadCrt" class="button-link secondary" href="#" rel="noopener">
+            Android: 証明書 (.crt)
+          </a>
+          <button id="copyPem" class="secondary" type="button">PEM をコピー</button>
+        </div>
+        <p id="certificateStatus" class="muted"></p>
+        <details class="cert-help">
+          <summary>インストール手順</summary>
+          <div class="cert-help-body">
+            <h3>iOS / iPadOS</h3>
+            <ol>
+              <li>Safari で「iOS: 構成プロファイル」ボタンをタップして .mobileconfig を開きます。</li>
+              <li>「設定 → 一般 → VPN とデバイス管理」からダウンロード済みプロファイルを開き、
+                インストールします。</li>
+              <li>「設定 → 一般 → 情報 → 証明書信頼設定」で当該証明書のスイッチをオンにします
+                （フル信頼の有効化）。</li>
+              <li>Safari を再読み込みし、鍵アイコンが警告なしになれば完了です。</li>
+            </ol>
+            <h3>Android</h3>
+            <ol>
+              <li>Chrome で「Android: 証明書 (.crt)」ボタンをタップしてダウンロードします。</li>
+              <li>「設定 → セキュリティとプライバシー → その他 → 暗号化と認証情報 → 証明書のインストール
+                → CA 証明書」を選択します（機種により表記が異なる場合があります）。</li>
+              <li>ダウンロードしたファイルを選択して「ユーザーによりインストールされた CA 証明書」として保存します。</li>
+              <li>Chrome を再起動すると信頼されます（一部のアプリはユーザー CA を信頼しないことがあります）。</li>
+            </ol>
+            <p class="muted">
+              フィンガープリント (SHA-256) が Mac 設定画面と一致していることを確認してからインストールしてください。
+            </p>
+          </div>
+        </details>
+      </section>
     </main>
   `;
 
@@ -88,7 +136,10 @@ function renderShell() {
     setBaseURL(baseUrlInput.value);
     setApiToken(apiTokenInput.value);
     setStatus("ペアリング情報を保存しました");
+    void refreshCertificate();
   };
+
+  setupCertificateSection();
 
   document.querySelector<HTMLButtonElement>("#enablePush")!.onclick = async () => {
     try {
@@ -117,6 +168,117 @@ function renderShell() {
 function setStatus(message: string) {
   const el = document.querySelector<HTMLParagraphElement>("#pairingStatus");
   if (el) el.textContent = message;
+}
+
+function setCertificateStatus(message: string) {
+  const el = document.querySelector<HTMLParagraphElement>("#certificateStatus");
+  if (el) el.textContent = message;
+}
+
+let latestCertificateInfo: CertificateInfo | null = null;
+
+function setupCertificateSection() {
+  const mobileConfigLink =
+    document.querySelector<HTMLAnchorElement>("#downloadMobileConfig")!;
+  const crtLink = document.querySelector<HTMLAnchorElement>("#downloadCrt")!;
+  const copyButton = document.querySelector<HTMLButtonElement>("#copyPem")!;
+
+  const applyLinks = () => {
+    mobileConfigLink.href = certificateDownloadURL("mobileconfig");
+    crtLink.href = certificateDownloadURL("crt");
+    if (latestCertificateInfo) {
+      const baseName = latestCertificateInfo.downloadBaseName;
+      mobileConfigLink.setAttribute("download", `${baseName}.mobileconfig`);
+      crtLink.setAttribute("download", `${baseName}.crt`);
+    }
+  };
+  applyLinks();
+
+  mobileConfigLink.addEventListener("click", applyLinks);
+  crtLink.addEventListener("click", applyLinks);
+
+  copyButton.addEventListener("click", async () => {
+    if (!latestCertificateInfo) {
+      setCertificateStatus("証明書情報がまだ取得できていません。");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(latestCertificateInfo.pem);
+      setCertificateStatus("PEM をクリップボードにコピーしました。");
+    } catch (error) {
+      setCertificateStatus(
+        `コピーに失敗しました: ${(error as Error).message}`
+      );
+    }
+  });
+
+  void refreshCertificate();
+}
+
+async function refreshCertificate() {
+  const summary = document.querySelector<HTMLDivElement>(
+    "#certificateSummary"
+  );
+  if (!summary) return;
+  try {
+    const info = await fetchCertificateInfo();
+    latestCertificateInfo = info;
+    summary.innerHTML = renderCertificateSummary(info);
+    const mobileConfigLink =
+      document.querySelector<HTMLAnchorElement>("#downloadMobileConfig");
+    const crtLink = document.querySelector<HTMLAnchorElement>("#downloadCrt");
+    if (mobileConfigLink) {
+      mobileConfigLink.setAttribute(
+        "download",
+        `${info.downloadBaseName}.mobileconfig`
+      );
+    }
+    if (crtLink) {
+      crtLink.setAttribute("download", `${info.downloadBaseName}.crt`);
+    }
+  } catch (error) {
+    summary.textContent = `証明書情報の取得に失敗しました: ${
+      (error as Error).message
+    }`;
+  }
+}
+
+function renderCertificateSummary(info: CertificateInfo): string {
+  const dns = info.dnsNames.length > 0 ? info.dnsNames.join(", ") : "(なし)";
+  const ips =
+    info.ipAddresses.length > 0 ? info.ipAddresses.join(", ") : "(なし)";
+  const notBefore = formatDate(info.notBefore);
+  const notAfter = formatDate(info.notAfter);
+  return `
+    <dl class="cert-info">
+      <dt>コモンネーム</dt>
+      <dd>${escapeHtml(info.commonName)}</dd>
+      <dt>DNS 名</dt>
+      <dd>${escapeHtml(dns)}</dd>
+      <dt>IP アドレス</dt>
+      <dd>${escapeHtml(ips)}</dd>
+      <dt>有効期間</dt>
+      <dd>${escapeHtml(notBefore)} 〜 ${escapeHtml(notAfter)}</dd>
+      <dt>SHA-256 フィンガープリント</dt>
+      <dd class="mono">${escapeHtml(info.sha256Fingerprint)}</dd>
+    </dl>
+  `;
+}
+
+function formatDate(input?: string): string {
+  if (!input) return "不明";
+  const date = new Date(input);
+  if (Number.isNaN(date.getTime())) return input;
+  return date.toLocaleString();
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 async function refresh() {
