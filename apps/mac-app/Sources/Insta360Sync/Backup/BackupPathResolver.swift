@@ -22,23 +22,55 @@ enum BackupPathResolver {
         }
     }
 
-    static func resolveCollisionURL(
+    enum DuplicateDestination {
+        case download(to: URL, overwrite: Bool)
+        case skipAlreadyPresent
+    }
+
+    static func resolveDuplicateDestination(
         proposed: URL,
-        camera: CameraProfile,
+        behavior: DuplicateFileBehavior,
         expectedSize: Int64?
-    ) -> URL {
+    ) -> DuplicateDestination {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: proposed.path) else { return proposed }
-        let existingSize = fm.fileSize(at: proposed)
-        if let expectedSize, let existingSize, existingSize == expectedSize {
-            return proposed
+        guard fm.fileExists(atPath: proposed.path) else {
+            return .download(to: proposed, overwrite: false)
         }
+
+        let existingSize = fm.fileSize(at: proposed)
+        if sizesMatch(expected: expectedSize, existing: existingSize) {
+            return .skipAlreadyPresent
+        }
+
+        switch behavior {
+        case .skip:
+            if existingSize != nil, expectedSize != nil {
+                AppLogger.shared.warning("Size mismatch for \(proposed.lastPathComponent), skipping")
+            }
+            return .skipAlreadyPresent
+        case .overwrite:
+            return .download(to: proposed, overwrite: true)
+        case .addNumericSuffix:
+            let destination = nextNumericSuffixURL(for: proposed)
+            return .download(to: destination, overwrite: false)
+        }
+    }
+
+    static func nextNumericSuffixURL(for proposed: URL) -> URL {
+        let directory = proposed.deletingLastPathComponent()
         let ext = proposed.pathExtension
         let base = proposed.deletingPathExtension().lastPathComponent
-        let renamed = ext.isEmpty
-            ? "\(base)_\(camera.folderSlug)"
-            : "\(base)_\(camera.folderSlug).\(ext)"
-        return proposed.deletingLastPathComponent().appendingPathComponent(renamed, isDirectory: false)
+        let fm = FileManager.default
+
+        var suffix = 1
+        while true {
+            let candidateName = ext.isEmpty ? "\(base)_\(suffix)" : "\(base)_\(suffix).\(ext)"
+            let candidate = directory.appendingPathComponent(candidateName, isDirectory: false)
+            if !fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+            suffix += 1
+        }
     }
 
     static func parseCreationDate(fromFilename filename: String) -> Date? {
@@ -62,6 +94,16 @@ enum BackupPathResolver {
             }
         }
         return nil
+    }
+
+    private static func sizesMatch(expected: Int64?, existing: Int64?) -> Bool {
+        if let expected, let existing {
+            return expected == existing
+        }
+        if expected == nil, existing != nil {
+            return true
+        }
+        return false
     }
 
     private static func dateFolderName(_ date: Date) -> String {

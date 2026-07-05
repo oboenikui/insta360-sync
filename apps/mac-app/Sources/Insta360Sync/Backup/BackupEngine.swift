@@ -30,7 +30,13 @@ final class BackupEngine: @unchecked Sendable {
             )
         )
 
-        var manifest = SyncManifestStore.load(destinationRoot: settings.destinationRoot, cameraID: camera.id)
+        let manifest = SyncManifestStore.load(destinationRoot: settings.destinationRoot, cameraID: camera.id)
+        let manifestScheduler = SyncManifestFlushScheduler(
+            manifest: manifest,
+            destinationRoot: settings.destinationRoot,
+            cameraID: camera.id
+        )
+
         let listedFiles = try await session.listAllFiles()
         let files = listedFiles.map { file in
             var updated = file
@@ -58,97 +64,49 @@ final class BackupEngine: @unchecked Sendable {
                 continue
             }
 
-            var destination = BackupPathResolver.destinationURL(for: file, camera: camera, settings: settings)
-            destination = BackupPathResolver.resolveCollisionURL(
-                proposed: destination,
-                camera: camera,
+            let proposed = BackupPathResolver.destinationURL(for: file, camera: camera, settings: settings)
+            let resolution = BackupPathResolver.resolveDuplicateDestination(
+                proposed: proposed,
+                behavior: settings.duplicateFileBehavior,
                 expectedSize: file.size
             )
 
-            let fm = FileManager.default
-            if fm.fileExists(atPath: destination.path) {
-                let existingSize = fm.fileSize(at: destination)
-                if let expected = file.size, let existingSize, existingSize == expected {
-                    SyncManifestStore.markSynced(file, manifest: &manifest)
-                    skipped += 1
-                    continue
-                }
-                if file.size == nil, existingSize != nil {
-                    SyncManifestStore.markSynced(file, manifest: &manifest)
-                    skipped += 1
-                    continue
-                }
-                if existingSize != nil, file.size != nil, existingSize != file.size {
-                    AppLogger.shared.warning("Size mismatch for \(destination.lastPathComponent), skipping")
-                    skipped += 1
-                    continue
-                }
-                if existingSize != nil {
-                    SyncManifestStore.markSynced(file, manifest: &manifest)
-                    skipped += 1
-                    continue
-                }
-            }
+            switch resolution {
+            case .skipAlreadyPresent:
+                await manifestScheduler.markSynced(file)
+                skipped += 1
+                continue
+            case let .download(destination, overwrite):
+                do {
+                    _ = try await downloader.download(
+                        file: file,
+                        to: destination,
+                        protocolKind: session.kind,
+                        overwrite: overwrite
+                    )
+                    await manifestScheduler.markSynced(file)
+                    copied += 1
 
-            do {
-                _ = try await downloader.download(
-                    file: file,
-                    to: destination,
-                    protocolKind: session.kind
-                )
-                SyncManifestStore.markSynced(file, manifest: &manifest)
-                copied += 1
-
-                if file.storage == "sd",
-                   file.name.lowercased().hasSuffix(".jpg"),
-                   let rawPath = Insta360Paths.companionRawPath(for: file.sourcePath),
-                   !files.contains(where: { $0.sourcePath == rawPath && $0.isSynced }) {
-                    let rawName = (rawPath as NSString).lastPathComponent
-                    let rawFile = Insta360CameraFile(
-                        sourcePath: rawPath,
-                        downloadURL: Insta360Paths.buildDownloadURL(
-                            host: Insta360Defaults.cameraHost,
-                            httpPort: Insta360Defaults.cameraHTTPPort,
-                            sourcePath: rawPath
-                        ),
-                        createdAt: file.createdAt,
-                        name: rawName,
-                        storage: "sd",
-                        captureTime: file.captureTime
-                    )
-                    var rawDestination = BackupPathResolver.destinationURL(
-                        for: rawFile,
-                        camera: camera,
-                        settings: settings
-                    )
-                    rawDestination = BackupPathResolver.resolveCollisionURL(
-                        proposed: rawDestination,
-                        camera: camera,
-                        expectedSize: nil
-                    )
-                    if !fm.fileExists(atPath: rawDestination.path) {
-                        do {
-                            _ = try await downloader.download(
-                                file: rawFile,
-                                to: rawDestination,
-                                protocolKind: session.kind
-                            )
-                            SyncManifestStore.markSynced(rawFile, manifest: &manifest)
-                            copied += 1
-                        } catch {
-                            AppLogger.shared.warning(
-                                "Companion DNG skipped for \(rawName): \(error.localizedDescription)"
-                            )
-                        }
+                    if file.storage == "sd",
+                       file.name.lowercased().hasSuffix(".jpg"),
+                       let rawPath = Insta360Paths.companionRawPath(for: file.sourcePath),
+                       !files.contains(where: { $0.sourcePath == rawPath && $0.isSynced }) {
+                        try await downloadCompanionRaw(
+                            rawPath: rawPath,
+                            referenceFile: file,
+                            camera: camera,
+                            settings: settings,
+                            session: session,
+                            manifestScheduler: manifestScheduler,
+                            copied: &copied
+                        )
                     }
+                } catch {
+                    failed += 1
+                    AppLogger.shared.error("Download failed for \(file.sourcePath): \(error.localizedDescription)")
                 }
-            } catch {
-                failed += 1
-                AppLogger.shared.error("Download failed for \(file.sourcePath): \(error.localizedDescription)")
             }
         }
-
-        try? SyncManifestStore.save(manifest, destinationRoot: settings.destinationRoot, cameraID: camera.id)
 
         progress(
             BackupProgress(
@@ -170,11 +128,63 @@ final class BackupEngine: @unchecked Sendable {
             )
         )
 
+        await manifestScheduler.finish()
+
         return BackupResult(
             copiedCount: copied,
             skippedCount: skipped,
             failedCount: failed,
             protocolKind: session.kind
         )
+    }
+
+    private func downloadCompanionRaw(
+        rawPath: String,
+        referenceFile: Insta360CameraFile,
+        camera: CameraProfile,
+        settings: AppSettings,
+        session: CameraSession,
+        manifestScheduler: SyncManifestFlushScheduler,
+        copied: inout Int
+    ) async throws {
+        let rawName = (rawPath as NSString).lastPathComponent
+        let rawFile = Insta360CameraFile(
+            sourcePath: rawPath,
+            downloadURL: Insta360Paths.buildDownloadURL(
+                host: Insta360Defaults.cameraHost,
+                httpPort: Insta360Defaults.cameraHTTPPort,
+                sourcePath: rawPath
+            ),
+            createdAt: referenceFile.createdAt,
+            name: rawName,
+            storage: "sd",
+            captureTime: referenceFile.captureTime
+        )
+        let proposed = BackupPathResolver.destinationURL(for: rawFile, camera: camera, settings: settings)
+        let resolution = BackupPathResolver.resolveDuplicateDestination(
+            proposed: proposed,
+            behavior: settings.duplicateFileBehavior,
+            expectedSize: nil
+        )
+
+        switch resolution {
+        case .skipAlreadyPresent:
+            await manifestScheduler.markSynced(rawFile)
+        case let .download(destination, overwrite):
+            do {
+                _ = try await downloader.download(
+                    file: rawFile,
+                    to: destination,
+                    protocolKind: session.kind,
+                    overwrite: overwrite
+                )
+                await manifestScheduler.markSynced(rawFile)
+                copied += 1
+            } catch {
+                AppLogger.shared.warning(
+                    "Companion DNG skipped for \(rawName): \(error.localizedDescription)"
+                )
+            }
+        }
     }
 }

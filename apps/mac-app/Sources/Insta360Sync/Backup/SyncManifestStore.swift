@@ -70,6 +70,51 @@ enum SyncManifestStore {
     }
 }
 
+private let manifestFlushInterval: Duration = .seconds(5)
+
+actor SyncManifestFlushScheduler {
+    private var manifest: SyncManifest
+    private let destinationRoot: URL
+    private let cameraID: UUID
+    private var dirty = false
+    private var flushTask: Task<Void, Never>?
+
+    init(manifest: SyncManifest, destinationRoot: URL, cameraID: UUID) {
+        self.manifest = manifest
+        self.destinationRoot = destinationRoot
+        self.cameraID = cameraID
+    }
+
+    func markSynced(_ file: Insta360CameraFile) {
+        SyncManifestStore.markSynced(file, manifest: &manifest)
+        dirty = true
+        startFlushLoopIfNeeded()
+    }
+
+    func finish() {
+        flushTask?.cancel()
+        flushTask = nil
+        flushIfNeeded()
+    }
+
+    private func startFlushLoopIfNeeded() {
+        guard flushTask == nil else { return }
+        flushTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: manifestFlushInterval)
+                guard !Task.isCancelled else { break }
+                flushIfNeeded()
+            }
+        }
+    }
+
+    private func flushIfNeeded() {
+        guard dirty else { return }
+        try? SyncManifestStore.save(manifest, destinationRoot: destinationRoot, cameraID: cameraID)
+        dirty = false
+    }
+}
+
 private extension JSONDecoder {
     static var iso8601: JSONDecoder {
         let decoder = JSONDecoder()

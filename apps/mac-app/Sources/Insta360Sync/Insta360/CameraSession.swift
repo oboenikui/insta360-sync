@@ -62,12 +62,17 @@ final class FileDownloader: Sendable {
     func download(
         file: Insta360CameraFile,
         to destinationURL: URL,
-        protocolKind: CameraProtocolKind
+        protocolKind: CameraProtocolKind,
+        overwrite: Bool = false
     ) async throws -> Int64 {
         let fm = FileManager.default
         try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         if fm.fileExists(atPath: destinationURL.path) {
-            return fm.fileSize(at: destinationURL) ?? 0
+            if overwrite {
+                try fm.removeItem(at: destinationURL)
+            } else {
+                return fm.fileSize(at: destinationURL) ?? 0
+            }
         }
 
         var lastError: Error = FileDownloadError.httpFailure
@@ -92,6 +97,11 @@ final class FileDownloader: Sendable {
                 }
                 if fm.fileExists(atPath: destinationURL.path) {
                     try? fm.removeItem(at: tempURL)
+                    if overwrite {
+                        try fm.removeItem(at: destinationURL)
+                        try fm.moveItem(at: tempURL, to: destinationURL)
+                        return fm.fileSize(at: destinationURL) ?? 0
+                    }
                     return fm.fileSize(at: destinationURL) ?? 0
                 }
                 try fm.moveItem(at: tempURL, to: destinationURL)
