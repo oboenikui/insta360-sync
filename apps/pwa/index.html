@@ -8,7 +8,101 @@
     <title>Insta360 Sync</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <main class="container">
+        <header class="app-header">
+          <div>
+            <h1>Insta360 Sync</h1>
+            <p class="muted">Mac からのバックアップ承認</p>
+          </div>
+          <button id="openSettings" class="icon-button" type="button" aria-label="設定">
+            <span aria-hidden="true">⚙</span>
+          </button>
+        </header>
+
+        <div id="mainView" class="view">
+          <section class="card">
+            <h2>承認待ち</h2>
+            <div id="pendingList"></div>
+          </section>
+
+          <section class="card">
+            <h2>進捗</h2>
+            <pre id="progressBox" class="mono"></pre>
+          </section>
+
+          <section class="card">
+            <h2>履歴</h2>
+            <div id="historyList"></div>
+          </section>
+        </div>
+
+        <div id="settingsView" class="view" hidden>
+          <div class="settings-header">
+            <button id="closeSettings" class="icon-button" type="button" aria-label="戻る">
+              <span aria-hidden="true">←</span>
+            </button>
+            <h2>設定</h2>
+          </div>
+
+          <section class="card">
+            <h3>ペアリング</h3>
+            <label>Mac HTTPS URL<input id="baseUrl" type="url" placeholder="https://your-mac.local:9443" /></label>
+            <label>API トークン<input id="apiToken" type="text" placeholder="Mac アプリに表示されたトークン" /></label>
+            <div class="settings-actions">
+              <button id="savePairing" type="button">保存</button>
+              <button id="enablePush" type="button" class="secondary">Push 通知を有効化</button>
+            </div>
+            <p id="pairingStatus" class="muted"></p>
+          </section>
+
+          <section class="card">
+            <h3>ルート証明書</h3>
+            <p class="muted">
+              Mac が生成した自己署名ルート証明書を端末にインストールすると、ブラウザや PWA が
+              この Mac の HTTPS を「信頼済み」として扱えるようになります。一度信頼設定を有効に
+              すれば、以降このセクションを開く必要はありません。
+            </p>
+            <div id="certificateSummary" class="muted">証明書情報を取得しています…</div>
+            <div class="cert-actions">
+              <a id="downloadCrt" class="button-link" href="#" rel="noopener">
+                証明書をダウンロード (.crt)
+              </a>
+              <button id="copyPem" class="secondary" type="button">PEM をコピー</button>
+            </div>
+            <p id="certificateStatus" class="muted"></p>
+            <details class="cert-help">
+              <summary>インストール手順</summary>
+              <div class="cert-help-body">
+                <h4>iOS / iPadOS</h4>
+                <ol>
+                  <li>Safari で「証明書をダウンロード」ボタンをタップし、プロファイルをダウンロードします。</li>
+                  <li>設定 → 一般 → VPN とデバイス管理 → ダウンロードされたプロファイル
+                    を開き、インストールします。</li>
+                  <li>設定 → 一般 → 情報 → 証明書信頼設定 で当該証明書のスイッチをオンに
+                    します（フル信頼の有効化）。</li>
+                  <li>Safari を再読み込みし、鍵アイコンが警告なしになれば完了です。</li>
+                </ol>
+                <h4>Android</h4>
+                <ol>
+                  <li>Chrome で「証明書をダウンロード」ボタンをタップしてファイルを保存します。</li>
+                  <li>設定 → セキュリティとプライバシー → その他 → 暗号化と認証情報 →
+                    証明書のインストール → CA 証明書 を選択します（機種により表記が異なる場合があります）。</li>
+                  <li>ダウンロードしたファイルを選択し「ユーザーによりインストールされた CA 証明書」
+                    として保存します。</li>
+                  <li>Chrome を再起動すると信頼されます（一部のアプリはユーザー CA を信頼しない
+                    ことがあります）。</li>
+                </ol>
+                <p class="muted">
+                  フィンガープリント (SHA-256) が Mac 設定画面と一致していることを確認してから
+                  インストールしてください。
+                </p>
+              </div>
+            </details>
+          </section>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

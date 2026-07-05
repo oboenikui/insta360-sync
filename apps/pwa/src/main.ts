@@ -9,6 +9,7 @@ import {
   setBaseURL,
   type CertificateInfo,
 } from "./api";
+import { appendDefinitionList, appendMutedMessage, el, replaceChildren } from "./dom";
 import "./style.css";
 
 type PendingBackup = {
@@ -46,108 +47,11 @@ type PublicSettings = {
   cameras: Array<{ id: string; displayName: string; ssid: string; isEnabled: boolean }>;
 };
 
-const app = document.querySelector<HTMLDivElement>("#app")!;
-
-let latestCertificateInfo: CertificateInfo | null = null;
 type View = "main" | "settings";
 
-function renderShell() {
-  app.innerHTML = `
-    <main class="container">
-      <header class="app-header">
-        <div>
-          <h1>Insta360 Sync</h1>
-          <p class="muted">Mac からのバックアップ承認</p>
-        </div>
-        <button id="openSettings" class="icon-button" type="button" aria-label="設定">
-          <span aria-hidden="true">⚙</span>
-        </button>
-      </header>
+let latestCertificateInfo: CertificateInfo | null = null;
 
-      <div id="mainView" class="view">
-        <section class="card">
-          <h2>承認待ち</h2>
-          <div id="pendingList"></div>
-        </section>
-
-        <section class="card">
-          <h2>進捗</h2>
-          <pre id="progressBox" class="mono"></pre>
-        </section>
-
-        <section class="card">
-          <h2>履歴</h2>
-          <div id="historyList"></div>
-        </section>
-      </div>
-
-      <div id="settingsView" class="view" hidden>
-        <div class="settings-header">
-          <button id="closeSettings" class="icon-button" type="button" aria-label="戻る">
-            <span aria-hidden="true">←</span>
-          </button>
-          <h2>設定</h2>
-        </div>
-
-        <section class="card">
-          <h3>ペアリング</h3>
-          <label>Mac HTTPS URL<input id="baseUrl" type="url" placeholder="https://your-mac.local:9443" /></label>
-          <label>API トークン<input id="apiToken" type="text" placeholder="Mac アプリに表示されたトークン" /></label>
-          <div class="settings-actions">
-            <button id="savePairing" type="button">保存</button>
-            <button id="enablePush" type="button" class="secondary">Push 通知を有効化</button>
-          </div>
-          <p id="pairingStatus" class="muted"></p>
-        </section>
-
-        <section class="card">
-          <h3>ルート証明書</h3>
-          <p class="muted">
-            Mac が生成した自己署名ルート証明書を端末にインストールすると、ブラウザや PWA が
-            この Mac の HTTPS を「信頼済み」として扱えるようになります。一度信頼設定を有効に
-            すれば、以降このセクションを開く必要はありません。
-          </p>
-          <div id="certificateSummary" class="muted">証明書情報を取得しています…</div>
-          <div class="cert-actions">
-            <a id="downloadCrt" class="button-link" href="#" rel="noopener">
-              証明書をダウンロード (.crt)
-            </a>
-            <button id="copyPem" class="secondary" type="button">PEM をコピー</button>
-          </div>
-          <p id="certificateStatus" class="muted"></p>
-          <details class="cert-help">
-            <summary>インストール手順</summary>
-            <div class="cert-help-body">
-              <h4>iOS / iPadOS</h4>
-              <ol>
-                <li>Safari で「証明書をダウンロード」ボタンをタップし、プロファイルをダウンロードします。</li>
-                <li>設定 → 一般 → VPN とデバイス管理 → ダウンロードされたプロファイル
-                  を開き、インストールします。</li>
-                <li>設定 → 一般 → 情報 → 証明書信頼設定 で当該証明書のスイッチをオンに
-                  します（フル信頼の有効化）。</li>
-                <li>Safari を再読み込みし、鍵アイコンが警告なしになれば完了です。</li>
-              </ol>
-              <h4>Android</h4>
-              <ol>
-                <li>Chrome で「証明書をダウンロード」ボタンをタップしてファイルを保存します。</li>
-                <li>設定 → セキュリティとプライバシー → その他 → 暗号化と認証情報 →
-                  証明書のインストール → CA 証明書 を選択します（機種により表記が異なる場合があります）。</li>
-                <li>ダウンロードしたファイルを選択し「ユーザーによりインストールされた CA 証明書」
-                  として保存します。</li>
-                <li>Chrome を再起動すると信頼されます（一部のアプリはユーザー CA を信頼しない
-                  ことがあります）。</li>
-              </ol>
-              <p class="muted">
-                フィンガープリント (SHA-256) が Mac 設定画面と一致していることを確認してから
-                インストールしてください。
-              </p>
-            </div>
-          </details>
-        </section>
-      </div>
-    </main>
-  `;
-
+function init() {
   document.querySelector<HTMLButtonElement>("#openSettings")!.onclick = () => {
     showView("settings");
   };
@@ -157,6 +61,7 @@ function renderShell() {
 
   setupPairingSection();
   setupCertificateSection();
+  setupPendingList();
 }
 
 function showView(view: View) {
@@ -248,7 +153,7 @@ async function refreshCertificate() {
   try {
     const info = await fetchCertificateInfo();
     latestCertificateInfo = info;
-    summary.innerHTML = renderCertificateSummary(info);
+    renderCertificateSummary(summary, info);
     const crtLink = document.querySelector<HTMLAnchorElement>("#downloadCrt");
     if (crtLink) {
       crtLink.setAttribute("download", `${info.downloadBaseName}.crt`);
@@ -258,25 +163,19 @@ async function refreshCertificate() {
   }
 }
 
-function renderCertificateSummary(info: CertificateInfo): string {
+function renderCertificateSummary(container: Element, info: CertificateInfo) {
   const dns = info.dnsNames.length > 0 ? info.dnsNames.join(", ") : "(なし)";
   const ips = info.ipAddresses.length > 0 ? info.ipAddresses.join(", ") : "(なし)";
   const notBefore = formatDate(info.notBefore);
   const notAfter = formatDate(info.notAfter);
-  return `
-    <dl class="cert-info">
-      <dt>コモンネーム</dt>
-      <dd>${escapeHtml(info.commonName)}</dd>
-      <dt>DNS 名</dt>
-      <dd>${escapeHtml(dns)}</dd>
-      <dt>IP アドレス</dt>
-      <dd>${escapeHtml(ips)}</dd>
-      <dt>有効期間</dt>
-      <dd>${escapeHtml(notBefore)} 〜 ${escapeHtml(notAfter)}</dd>
-      <dt>SHA-256 フィンガープリント</dt>
-      <dd class="mono">${escapeHtml(info.sha256Fingerprint)}</dd>
-    </dl>
-  `;
+
+  appendDefinitionList(container, [
+    { term: "コモンネーム", value: info.commonName },
+    { term: "DNS 名", value: dns },
+    { term: "IP アドレス", value: ips },
+    { term: "有効期間", value: `${notBefore} 〜 ${notAfter}` },
+    { term: "SHA-256 フィンガープリント", value: info.sha256Fingerprint, valueClassName: "mono" },
+  ]);
 }
 
 function formatDate(input?: string): string {
@@ -284,15 +183,6 @@ function formatDate(input?: string): string {
   const date = new Date(input);
   if (Number.isNaN(date.getTime())) return input;
   return date.toLocaleString();
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 async function refresh() {
@@ -308,50 +198,63 @@ async function refresh() {
   }
 }
 
+function setupPendingList() {
+  const container = document.querySelector<HTMLDivElement>("#pendingList");
+  if (!container) return;
+
+  container.addEventListener("click", async (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-approve], button[data-skip]");
+    if (!target) return;
+
+    const approveId = target.dataset.approve;
+    const skipId = target.dataset.skip;
+
+    try {
+      if (approveId) {
+        await apiFetch("/api/backup/approve", {
+          method: "POST",
+          body: JSON.stringify({ pendingId: approveId }),
+        });
+      } else if (skipId) {
+        await apiFetch("/api/backup/skip", {
+          method: "POST",
+          body: JSON.stringify({ pendingId: skipId }),
+        });
+      }
+      await refresh();
+    } catch (error) {
+      setStatus(`操作に失敗しました: ${(error as Error).message}`);
+    }
+  });
+}
+
 function renderPending(items: PendingBackup[]) {
   const container = document.querySelector<HTMLDivElement>("#pendingList");
   if (!container) return;
+
   if (items.length === 0) {
-    container.innerHTML = `<p class="muted">承認待ちはありません</p>`;
+    appendMutedMessage(container, "承認待ちはありません");
     return;
   }
-  container.innerHTML = items
-    .map(
-      (item) => `
-      <article class="pending-item">
-        <div>
-          <strong>${item.cameraName}</strong>
-          <div class="muted">${item.ssid}</div>
-        </div>
-        <div class="actions">
-          <button data-approve="${item.id}">バックアップ開始</button>
-          <button data-skip="${item.id}" class="secondary">スキップ</button>
-        </div>
-      </article>`
-    )
-    .join("");
 
-  container.querySelectorAll("[data-approve]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const id = (button as HTMLButtonElement).dataset.approve!;
-      await apiFetch("/api/backup/approve", {
-        method: "POST",
-        body: JSON.stringify({ pendingId: id }),
-      });
-      await refresh();
-    });
-  });
+  replaceChildren(
+    container,
+    ...items.map((item) => {
+      const info = el("div");
+      info.append(el("strong", { textContent: item.cameraName }));
+      info.append(el("div", { className: "muted", textContent: item.ssid }));
 
-  container.querySelectorAll("[data-skip]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const id = (button as HTMLButtonElement).dataset.skip!;
-      await apiFetch("/api/backup/skip", {
-        method: "POST",
-        body: JSON.stringify({ pendingId: id }),
-      });
-      await refresh();
-    });
-  });
+      const approveButton = el("button", { textContent: "バックアップ開始" });
+      approveButton.dataset.approve = item.id;
+
+      const skipButton = el("button", { className: "secondary", textContent: "スキップ" });
+      skipButton.dataset.skip = item.id;
+
+      const actions = el("div", { className: "actions" }, approveButton, skipButton);
+
+      return el("article", { className: "pending-item" }, info, actions);
+    })
+  );
 }
 
 function renderProgress(status: BackupStatus) {
@@ -367,20 +270,22 @@ function renderProgress(status: BackupStatus) {
 function renderHistory(history: BackupStatus["history"]) {
   const container = document.querySelector<HTMLDivElement>("#historyList");
   if (!container) return;
+
   if (history.length === 0) {
-    container.innerHTML = `<p class="muted">履歴はまだありません</p>`;
+    appendMutedMessage(container, "履歴はまだありません");
     return;
   }
-  container.innerHTML = history
-    .slice(0, 10)
-    .map(
-      (entry) => `
-      <article class="history-item">
-        <strong>${entry.cameraName}</strong>
-        <div class="muted">新規 ${entry.copiedCount} / スキップ ${entry.skippedCount} / 失敗 ${entry.failedCount}</div>
-      </article>`
-    )
-    .join("");
+
+  replaceChildren(
+    container,
+    ...history.slice(0, 10).map((entry) => {
+      const stats = el("div", {
+        className: "muted",
+        textContent: `新規 ${entry.copiedCount} / スキップ ${entry.skippedCount} / 失敗 ${entry.failedCount}`,
+      });
+      return el("article", { className: "history-item" }, el("strong", { textContent: entry.cameraName }), stats);
+    })
+  );
 }
 
 function handleDeepLink() {
@@ -389,13 +294,12 @@ function handleDeepLink() {
   if (pendingId) {
     setStatus(`通知から開きました: ${pendingId}`);
   }
-  // 初回起動 (API トークン未設定) の場合は設定画面を最初に開く。
   if (!getApiToken()) {
     showView("settings");
   }
 }
 
-renderShell();
+init();
 handleDeepLink();
 setInterval(() => {
   void refresh();
