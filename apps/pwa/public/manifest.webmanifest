@@ -2,6 +2,7 @@
   "name": "Insta360 Sync",
   "short_name": "Insta360",
   "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#111827",
   "theme_color": "#111827",

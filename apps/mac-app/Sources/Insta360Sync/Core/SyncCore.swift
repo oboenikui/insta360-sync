@@ -36,7 +36,15 @@ final class SyncCore {
         LocationAuthorization.shared.requestIfNeeded()
 
         let staticRoot = Self.resolveStaticRoot()
-        let server = HTTPServer(port: settings.httpsPort, staticRoot: staticRoot, core: self)
+        let certPath = settings.usesCustomTLSCertificate ? settings.tlsCertificatePath : nil
+        let keyPath = settings.usesCustomTLSCertificate ? settings.tlsPrivateKeyPath : nil
+        let server = HTTPServer(
+            port: settings.httpsPort,
+            staticRoot: staticRoot,
+            core: self,
+            tlsCertificatePath: certPath,
+            tlsPrivateKeyPath: keyPath
+        )
         do {
             try server.start()
             httpsServer = server
@@ -77,13 +85,78 @@ final class SyncCore {
     }
 
     func registerPushSubscription(_ subscription: PushSubscriptionRecord) {
-        if !settings.pushSubscriptions.contains(where: { $0.endpoint == subscription.endpoint }) {
+        if let index = settings.pushSubscriptions.firstIndex(where: { $0.endpoint == subscription.endpoint }) {
+            settings.pushSubscriptions[index] = subscription
+            AppLogger.shared.info(
+                "Push subscription updated for \(subscription.endpointHost) …\(subscription.endpointSuffix)",
+                category: .push
+            )
+        } else {
             settings.pushSubscriptions.append(subscription)
             AppLogger.shared.info(
-                "Push subscription registered (\(settings.pushSubscriptions.count) total)",
+                "Push subscription registered for \(subscription.endpointHost) …\(subscription.endpointSuffix) (\(settings.pushSubscriptions.count) total)",
                 category: .push
             )
         }
+    }
+
+    func removePushSubscription(endpoint: String) {
+        let before = settings.pushSubscriptions.count
+        settings.pushSubscriptions.removeAll { $0.endpoint == endpoint }
+        if settings.pushSubscriptions.count < before {
+            let host = URL(string: endpoint)?.host ?? endpoint
+            AppLogger.shared.info("Removed push subscription for \(host)", category: .push)
+        }
+    }
+
+    func removeAllPushSubscriptions() {
+        let count = settings.pushSubscriptions.count
+        settings.pushSubscriptions = []
+        if count > 0 {
+            AppLogger.shared.info("Removed all \(count) push subscription(s)", category: .push)
+        }
+    }
+
+    func sendTestPush(toEndpoint endpoint: String? = nil) async -> [PushDeliveryResult] {
+        let targets: [PushSubscriptionRecord]?
+        if let endpoint {
+            let matches = settings.pushSubscriptions.filter { $0.endpoint == endpoint }
+            if matches.isEmpty {
+                AppLogger.shared.warning(
+                    "Test push skipped: endpoint not found …\(String(endpoint.suffix(24)))",
+                    category: .push
+                )
+                return [
+                    PushDeliveryResult(
+                        endpoint: endpoint,
+                        endpointHost: URL(string: endpoint)?.host ?? endpoint,
+                        ok: false,
+                        statusCode: nil,
+                        error: "Mac 側にこの endpoint の購読がありません。Push 通知を有効化してください。",
+                        apnsID: nil,
+                        reason: nil,
+                        responseBody: nil,
+                        responseHeaders: [:],
+                        payloadBytes: nil
+                    ),
+                ]
+            }
+            targets = matches
+        } else {
+            targets = nil
+        }
+        let results = await webPush.sendTest(settings: settings, subscriptions: targets)
+        applyPushDeliveryResults(results)
+        return results
+    }
+
+    private func applyPushDeliveryResults(_ results: [PushDeliveryResult]) {
+        let expired = Set(results.filter(\.isExpired).map(\.endpoint))
+        guard !expired.isEmpty else { return }
+        let before = settings.pushSubscriptions.count
+        settings.pushSubscriptions.removeAll { expired.contains($0.endpoint) }
+        let removed = before - settings.pushSubscriptions.count
+        AppLogger.shared.info("Removed \(removed) expired push subscription(s)", category: .push)
     }
 
     func handleDetectedCamera(_ camera: CameraProfile) async {
@@ -94,7 +167,8 @@ final class SyncCore {
             category: .push
         )
         let pushSettings = settings
-        await webPush.notifyBackupPending(settings: pushSettings, pending: pending)
+        let results = await webPush.notifyBackupPending(settings: pushSettings, pending: pending)
+        applyPushDeliveryResults(results)
     }
 
     func approveBackup(id: UUID) async {
@@ -171,12 +245,13 @@ final class SyncCore {
                 ),
                 at: 0
             )
-            await webPush.notifyBackupFinished(
+            let finishResults = await webPush.notifyBackupFinished(
                 settings: backupSettings,
                 cameraName: camera.displayName,
                 copied: result.copiedCount,
                 skipped: result.skippedCount
             )
+            applyPushDeliveryResults(finishResults)
         } else {
             pendingStore.update(pendingID, status: .failed)
             history.insert(

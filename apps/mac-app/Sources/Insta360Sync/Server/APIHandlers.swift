@@ -2,7 +2,7 @@ import Foundation
 
 extension SyncCore {
     @MainActor
-    func handleAPI(_ request: HTTPRequest) -> Data {
+    func handleAPI(_ request: HTTPRequest) async -> Data {
         if request.method == "OPTIONS" {
             return HTTPResponse.options()
         }
@@ -24,6 +24,10 @@ extension SyncCore {
                 destinationRoot: settings.destinationRoot.path,
                 folderStructureMode: settings.folderStructureMode.rawValue,
                 vapidPublicKey: settings.vapidPublicKey,
+                vapidSubject: settings.vapidSubject,
+                vapidSubjectWarning: VAPIDKeys.isProblematicSubjectForApple(settings.vapidSubject)
+                    ? "Apple は .local / localhost を含む VAPID subject を拒否します（403 BadJwtToken）"
+                    : nil,
                 cameras: settings.cameras.map {
                     CameraDTO(id: $0.id, displayName: $0.displayName, ssid: $0.ssid, isEnabled: $0.isEnabled)
                 }
@@ -69,6 +73,58 @@ extension SyncCore {
             }
         }
 
+        if request.method == "GET" && path == "/api/push/subscriptions" {
+            guard authorize(request) else { return HTTPResponse.unauthorized() }
+            let subscriptions = settings.pushSubscriptions.map {
+                PushSubscriptionDTO(
+                    endpoint: $0.endpoint,
+                    endpointHost: $0.endpointHost,
+                    endpointSuffix: $0.endpointSuffix,
+                    createdAt: $0.createdAt
+                )
+            }
+            return HTTPResponse.json(subscriptions)
+        }
+
+        if request.method == "DELETE" && path == "/api/push/subscriptions" {
+            guard authorize(request) else { return HTTPResponse.unauthorized() }
+            if request.body.isEmpty {
+                removeAllPushSubscriptions()
+            } else if let body = try? JSONDecoder().decode(PushUnsubscribeRequest.self, from: request.body) {
+                if let endpoint = body.endpoint {
+                    removePushSubscription(endpoint: endpoint)
+                } else {
+                    removeAllPushSubscriptions()
+                }
+            } else {
+                return HTTPResponse.text("bad json", status: 400)
+            }
+            return HTTPResponse.json(["ok": true])
+        }
+
+        if request.method == "POST" && path == "/api/push/test" {
+            guard authorize(request) else { return HTTPResponse.unauthorized() }
+            let targetEndpoint = (try? JSONDecoder().decode(PushTestRequest.self, from: request.body))?.endpoint
+            let results = await sendTestPush(toEndpoint: targetEndpoint)
+            let dto = PushTestResponseDTO(
+                results: results.map {
+                    PushDeliveryResultDTO(
+                        endpointSuffix: $0.endpointSuffix,
+                        endpointHost: $0.endpointHost,
+                        ok: $0.ok,
+                        statusCode: $0.statusCode,
+                        error: $0.error,
+                        apnsID: $0.apnsID,
+                        reason: $0.reason,
+                        responseBody: $0.responseBody,
+                        responseHeaders: $0.responseHeaders,
+                        payloadBytes: $0.payloadBytes
+                    )
+                }
+            )
+            return HTTPResponse.json(dto)
+        }
+
         if request.method == "POST" && path == "/api/backup/approve" {
             guard authorize(request) else { return HTTPResponse.unauthorized() }
             guard let body = try? JSONDecoder().decode(BackupActionRequest.self, from: request.body) else {
@@ -94,8 +150,10 @@ extension SyncCore {
     private func handleCertificateEndpoint(path: String) -> Data? {
         guard path.hasPrefix("/api/public/certificate") else { return nil }
 
+        let customPath = settings.usesCustomTLSCertificate ? settings.tlsCertificatePath : nil
+
         let baseName: String
-        if let info = try? TLSCertificateService.makeInfo() {
+        if let info = try? TLSCertificateService.makeInfo(customPath: customPath) {
             baseName = info.downloadBaseName
         } else {
             baseName = "insta360-sync-root"
@@ -104,12 +162,12 @@ extension SyncCore {
         do {
             switch path {
             case "/api/public/certificate":
-                let info = try TLSCertificateService.makeInfo()
+                let info = try TLSCertificateService.makeInfo(customPath: customPath)
                 return HTTPResponse.json(info)
 
             case "/api/public/certificate.pem",
                  "/api/public/certificate.crt":
-                let pem = try TLSCertificateService.pemData()
+                let pem = try TLSCertificateService.pemData(customPath: customPath)
                 return HTTPResponse.attachment(
                     pem,
                     contentType: "application/x-x509-ca-cert",
@@ -117,7 +175,7 @@ extension SyncCore {
                 )
 
             case "/api/public/certificate.der":
-                let der = try TLSCertificateService.derData()
+                let der = try TLSCertificateService.derData(customPath: customPath)
                 return HTTPResponse.attachment(
                     der,
                     contentType: "application/x-x509-ca-cert",
@@ -125,7 +183,13 @@ extension SyncCore {
                 )
 
             case "/api/public/certificate.mobileconfig":
-                let profile = try TLSCertificateService.mobileConfigData()
+                if settings.usesCustomTLSCertificate {
+                    return HTTPResponse.text(
+                        "Public CA certificate in use; mobileconfig install is not needed.",
+                        status: 404
+                    )
+                }
+                let profile = try TLSCertificateService.mobileConfigData(customPath: nil)
                 return HTTPResponse.attachment(
                     profile,
                     contentType: "application/x-apple-aspen-config",
@@ -135,6 +199,9 @@ extension SyncCore {
             default:
                 return HTTPResponse.notFound()
             }
+        } catch let error as TLSCertificateServiceError
+            where error == .mobileConfigNotApplicable {
+            return HTTPResponse.text(error.localizedDescription, status: 404)
         } catch {
             AppLogger.shared.warning(
                 "Certificate endpoint failed for \(path): \(error.localizedDescription)",

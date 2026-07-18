@@ -1,13 +1,26 @@
 import {
   apiFetch,
   certificateDownloadURL,
+  clearPushSubscriptions,
+  collectPushDiagnostics,
+  ensureServiceWorker,
   fetchCertificateInfo,
+  fetchPushSubscriptions,
   getApiToken,
   getBaseURL,
+  getLocalPushSubscription,
+  getServiceWorkerDetails,
+  getServiceWorkerStatusLabel,
+  pingServiceWorker,
   registerPush,
+  removePushSubscription,
+  sendTestPush,
   setApiToken,
   setBaseURL,
   type CertificateInfo,
+  type PushDeliveryResult,
+  type PushDiagnosticEvent,
+  type PushSubscription,
 } from "./api";
 import { appendDefinitionList, appendMutedMessage, el, replaceChildren } from "./dom";
 import "./style.css";
@@ -51,6 +64,8 @@ type PublicSettings = {
 type View = "main" | "settings";
 
 let latestCertificateInfo: CertificateInfo | null = null;
+const pushEventHistory: PushDiagnosticEvent[] = [];
+const MAX_PUSH_EVENT_HISTORY = 8;
 
 function init() {
   document.querySelector<HTMLButtonElement>("#openSettings")!.onclick = () => {
@@ -61,8 +76,20 @@ function init() {
   };
 
   setupPairingSection();
+  setupPushSection();
   setupCertificateSection();
   setupPendingList();
+  setupServiceWorkerMessageBridge();
+  void bootstrapServiceWorker();
+}
+
+async function bootstrapServiceWorker() {
+  try {
+    await ensureServiceWorker();
+  } catch (error) {
+    console.warn("Service worker bootstrap failed:", error);
+  }
+  await refreshServiceWorkerStatus();
 }
 
 function showView(view: View) {
@@ -71,6 +98,9 @@ function showView(view: View) {
   document.querySelector<HTMLButtonElement>("#openSettings")!.hidden = view !== "main";
   if (view === "settings") {
     void refreshCertificate();
+    void refreshPushSubscriptions();
+    void refreshServiceWorkerStatus();
+    void refreshPushDiagnostics();
   }
 }
 
@@ -98,6 +128,9 @@ function setupPairingSection() {
       await apiFetch<PublicSettings>("/api/settings");
       await registerPush();
       setStatus("Push 通知を登録しました");
+      void refreshPushSubscriptions();
+      void refreshServiceWorkerStatus();
+      void refreshPushDiagnostics();
     } catch (error) {
       const message = (error as Error).message;
       if (message.includes("401")) {
@@ -111,9 +144,318 @@ function setupPairingSection() {
   };
 }
 
+function formatPushDeliveryResult(result: PushDeliveryResult): string {
+  const lines: string[] = [];
+  if (result.ok) {
+    lines.push(`✓ ${result.endpointHost} …${result.endpointSuffix}`);
+    lines.push(`HTTP ${result.statusCode ?? "?"}`);
+  } else {
+    lines.push(`✗ ${result.endpointHost} …${result.endpointSuffix}`);
+    if (result.statusCode != null) {
+      lines.push(`HTTP ${result.statusCode}${result.reason ? `: ${result.reason}` : ""}`);
+    } else {
+      lines.push(result.error ?? "失敗");
+    }
+  }
+  if (result.payloadBytes != null) {
+    lines.push(`payload: ${result.payloadBytes} bytes`);
+  }
+  if (result.apnsID) {
+    lines.push(`apns-id: ${result.apnsID}`);
+  }
+  const headers = result.responseHeaders ?? {};
+  for (const [key, value] of Object.entries(headers).sort(([a], [b]) => a.localeCompare(b))) {
+    if (key.toLowerCase() === "apns-id") continue;
+    lines.push(`${key}: ${value}`);
+  }
+  if (result.responseBody) {
+    lines.push(`body: ${result.responseBody}`);
+  } else if (result.ok) {
+    lines.push("body: (empty)");
+  }
+  if (!result.ok && result.error) {
+    lines.push(result.error);
+  }
+  return lines.join("\n");
+}
+
 function setStatus(message: string) {
   const el = document.querySelector<HTMLParagraphElement>("#pairingStatus");
   if (el) el.textContent = message;
+}
+
+function setPushStatus(message: string) {
+  const el = document.querySelector<HTMLParagraphElement>("#pushStatus");
+  if (el) el.textContent = message;
+}
+
+async function refreshServiceWorkerStatus() {
+  const el = document.querySelector<HTMLParagraphElement>("#serviceWorkerStatus");
+  if (!el) return;
+  const label = await getServiceWorkerStatusLabel();
+  el.textContent = `Service Worker: ${label}`;
+}
+
+function setupServiceWorkerMessageBridge() {
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    const data = event.data as PushDiagnosticEvent | undefined;
+    if (!data?.type || !data.at) return;
+    pushEventHistory.unshift(data);
+    if (pushEventHistory.length > MAX_PUSH_EVENT_HISTORY) {
+      pushEventHistory.length = MAX_PUSH_EVENT_HISTORY;
+    }
+    renderPushEventLog();
+  });
+}
+
+function renderPushEventLog() {
+  const container = document.querySelector<HTMLDivElement>("#pushEventLog");
+  if (!container) return;
+  if (pushEventHistory.length === 0) {
+    container.textContent =
+      "SW イベント: まだありません（テスト送信後もここが空なら push が SW に届いていません）";
+    return;
+  }
+
+  replaceChildren(
+    container,
+    ...pushEventHistory.map((event) => {
+      const time = formatDate(event.at);
+      let text = `[${time}] ${event.type}`;
+      if (event.message) text += `: ${event.message}`;
+      if (event.rawData) text += ` (data: ${event.rawData})`;
+      if (event.title) text += ` → ${event.title}`;
+      if (event.error) text += ` — ${event.error}`;
+
+      const className =
+        event.type === "push-error"
+          ? "event-error"
+          : event.type === "push-received" || event.type === "notification-shown"
+            ? "event-ok"
+            : undefined;
+      return el("div", { className, textContent: text });
+    })
+  );
+}
+
+async function refreshPushDiagnostics() {
+  const container = document.querySelector<HTMLDivElement>("#pushDiagnostics");
+  if (!container) return;
+
+  const diagnostics = await collectPushDiagnostics();
+  const swDetails = await getServiceWorkerDetails().catch(() => null);
+  const entries: Array<{ term: string; value: string; valueClassName?: string }> = [
+    {
+      term: "通知許可",
+      value: formatNotificationPermission(diagnostics.notificationPermission),
+    },
+    {
+      term: "PushManager（ページ）",
+      value: formatPushManagerAvailability(
+        diagnostics.pushManagerInWindow,
+        diagnostics.pushManagerOnRegistration
+      ),
+    },
+    {
+      term: "ページ origin",
+      value: diagnostics.pageOrigin,
+      valueClassName: "mono",
+    },
+  ];
+
+  if (diagnostics.vapidSubject) {
+    entries.push({
+      term: "VAPID subject (sub)",
+      value: diagnostics.vapidSubjectWarning
+        ? `${diagnostics.vapidSubject}\n⚠ ${diagnostics.vapidSubjectWarning}`
+        : `${diagnostics.vapidSubject} ✓`,
+      valueClassName: "mono",
+    });
+  }
+
+  if (swDetails) {
+    entries.push(
+      {
+        term: "active SW",
+        value: swDetails.activeScriptURL ?? "(なし)",
+        valueClassName: "mono",
+      },
+      {
+        term: "controller SW",
+        value: swDetails.controllerScriptURL ?? "(なし)",
+        valueClassName: "mono",
+      }
+    );
+    if (swDetails.waitingScriptURL) {
+      entries.push({
+        term: "waiting SW",
+        value: `${swDetails.waitingScriptURL} — 更新待ち。再読み込みしてください`,
+        valueClassName: "mono",
+      });
+    }
+  }
+
+  if (diagnostics.localSubscription) {
+    entries.push(
+      {
+        term: "このブラウザの購読",
+        value: `…${diagnostics.localSubscription.endpointSuffix}`,
+        valueClassName: "mono",
+      },
+      {
+        term: "Mac 側に同一購読",
+        value:
+          diagnostics.serverHasLocalSubscription === null
+            ? "確認不可（API トークン未設定など）"
+            : diagnostics.serverHasLocalSubscription
+              ? "あり ✓"
+              : "なし ✗ — 「Push 通知を有効化」を再実行してください",
+      }
+    );
+  } else {
+    entries.push({
+      term: "このブラウザの購読",
+      value: "未登録 — 「Push 通知を有効化」を実行してください",
+    });
+  }
+
+  if (diagnostics.serverSubscriptionCount !== null) {
+    entries.push({
+      term: "Mac 側の購読数",
+      value: String(diagnostics.serverSubscriptionCount),
+    });
+  }
+
+  appendDefinitionList(container, entries);
+}
+
+function formatNotificationPermission(permission: NotificationPermission | "unsupported"): string {
+  switch (permission) {
+    case "granted":
+      return "許可 ✓";
+    case "denied":
+      return "拒否 ✗ — Safari 設定 → Web サイト → 通知 で許可してください";
+    case "default":
+      return "未設定 — 「Push 通知を有効化」で許可ダイアログを出してください";
+    default:
+      return "非対応";
+  }
+}
+
+function formatPushManagerAvailability(inWindow: boolean, onRegistration: boolean): string {
+  if (!inWindow) {
+    return "非対応 ✗ — macOS 13+ / Safari 16+ が必要。SW 内では pushManager は使えません";
+  }
+  if (!onRegistration) {
+    return "registration.pushManager なし ✗ — このコンテキストでは Web Push 不可";
+  }
+  return "利用可能 ✓（購読確認はページの Web インスペクタで）";
+}
+
+function setupPushSection() {
+  document.querySelector<HTMLButtonElement>("#pingServiceWorker")!.onclick = async () => {
+    try {
+      setPushStatus("SW に ping 送信中…");
+      const pong = await pingServiceWorker();
+      setPushStatus(`SW pong ✓\n${pong.scriptURL}\n${formatDate(pong.at)}`);
+      await refreshServiceWorkerStatus();
+      await refreshPushDiagnostics();
+    } catch (error) {
+      setPushStatus(`SW ping 失敗: ${(error as Error).message}`);
+    }
+  };
+
+  document.querySelector<HTMLButtonElement>("#sendTestPush")!.onclick = async () => {
+    if (!getApiToken()) {
+      setPushStatus("API トークンを設定してください");
+      return;
+    }
+    try {
+      setPushStatus("送信中…");
+      const local = await getLocalPushSubscription();
+      if (!local) {
+        setPushStatus("このブラウザに Push 購読がありません。「Push 通知を有効化」を実行してください。");
+        return;
+      }
+      const response = await sendTestPush(local.endpoint);
+      const lines = response.results.map((result) => formatPushDeliveryResult(result));
+      setPushStatus(
+        lines.length > 0
+          ? `${lines.join("\n\n")}\n\n※ 201 + apns-id は APNs 受理。push イベントは端末側で確認`
+          : "購読が登録されていません"
+      );
+      await refreshPushSubscriptions();
+      await refreshPushDiagnostics();
+    } catch (error) {
+      setPushStatus(`テスト送信失敗: ${(error as Error).message}`);
+    }
+  };
+
+  document.querySelector<HTMLButtonElement>("#clearPushSubscriptions")!.onclick = async () => {
+    if (!getApiToken()) {
+      setPushStatus("API トークンを設定してください");
+      return;
+    }
+    try {
+      await clearPushSubscriptions();
+      setPushStatus("すべての購読を削除しました");
+      await refreshPushSubscriptions();
+    } catch (error) {
+      setPushStatus(`削除失敗: ${(error as Error).message}`);
+    }
+  };
+
+  document.querySelector<HTMLDivElement>("#pushSubscriptionList")!.addEventListener("click", async (event) => {
+    const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-endpoint]");
+    if (!target?.dataset.endpoint) return;
+    try {
+      await removePushSubscription(target.dataset.endpoint);
+      setPushStatus("購読を削除しました");
+      await refreshPushSubscriptions();
+    } catch (error) {
+      setPushStatus(`削除失敗: ${(error as Error).message}`);
+    }
+  });
+}
+
+async function refreshPushSubscriptions() {
+  const container = document.querySelector<HTMLDivElement>("#pushSubscriptionList");
+  if (!container) return;
+  if (!getApiToken()) {
+    container.textContent = "API トークンを設定すると購読一覧を表示できます";
+    return;
+  }
+  try {
+    const subscriptions = await fetchPushSubscriptions();
+    renderPushSubscriptions(container, subscriptions);
+  } catch (error) {
+    container.textContent = `購読一覧の取得に失敗: ${(error as Error).message}`;
+  }
+}
+
+function renderPushSubscriptions(container: HTMLElement, subscriptions: PushSubscription[]) {
+  if (subscriptions.length === 0) {
+    appendMutedMessage(container, "登録済みの購読はありません。「Push 通知を有効化」で登録してください。");
+    return;
+  }
+
+  replaceChildren(
+    container,
+    ...subscriptions.map((subscription) => {
+      const created = formatDate(subscription.createdAt);
+      const info = el("div", { className: "push-subscription-info" });
+      info.append(el("strong", { textContent: subscription.endpointHost }));
+      info.append(
+        el("div", { className: "muted", textContent: `…${subscription.endpointSuffix} / 登録: ${created}` })
+      );
+
+      const removeButton = el("button", { className: "secondary", textContent: "削除" });
+      removeButton.dataset.endpoint = subscription.endpoint;
+
+      return el("article", { className: "push-subscription-item" }, info, removeButton);
+    })
+  );
 }
 
 function setCertificateStatus(message: string) {
