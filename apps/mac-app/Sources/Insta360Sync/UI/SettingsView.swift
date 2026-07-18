@@ -8,7 +8,8 @@ struct SettingsView: View {
     @State private var newDisplayName = ""
     @State private var newSSID = ""
     @State private var newPassword = Insta360Defaults.defaultWiFiPassword
-    @State private var httpsPortText = ""
+    @State private var pushTestMessage = ""
+    @State private var isSendingTestPush = false
 
     var body: some View {
         NavigationStack {
@@ -82,21 +83,7 @@ struct SettingsView: View {
                     Text("登録済み SSID が近くにあるかどうかを定期的に確認します。")
                 }
 
-                Section {
-                    HStack(spacing: 8) {
-                        TextField("HTTPS ポート", text: $httpsPortText)
-                            .frame(width: 88)
-                            .multilineTextAlignment(.trailing)
-                            .onSubmit { applyHTTPSPort() }
-                        Button("反映") { applyHTTPSPort() }
-                    }
-                } header: {
-                    Text("PWA / HTTPS サーバー")
-                } footer: {
-                    Text(
-                        "iPhone の PWA と API が接続するポートです。PWA の URL や「PWA を開く」のリンク先に使われます。変更すると実行中のサーバーを自動的に再起動します。"
-                    )
-                }
+                HTTPSServerSettingsSection(settings: settings, core: core)
 
                 Section("PWA / API") {
                     LabeledContent("API トークン") {
@@ -116,9 +103,64 @@ struct SettingsView: View {
                             .textSelection(.enabled)
                             .lineLimit(2)
                     }
+                    LabeledContent("VAPID subject (sub)") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(settings.vapidSubject)
+                                .font(.caption2)
+                                .textSelection(.enabled)
+                            if VAPIDKeys.isProblematicSubjectForApple(settings.vapidSubject) {
+                                Text("Apple は .local / localhost を含む subject を拒否します")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
                     Text("iPhone で PWA をホーム画面に追加し、この API トークンでペアリングしてください。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    if settings.pushSubscriptions.isEmpty {
+                        Text("登録済みの購読はありません")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(settings.pushSubscriptions) { subscription in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(subscription.endpointHost)
+                                    Text(subscription.createdAt, style: .relative)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button("削除", role: .destructive) {
+                                    core.removePushSubscription(endpoint: subscription.endpoint)
+                                }
+                            }
+                        }
+                    }
+                    HStack {
+                        Button("テスト通知を送信") {
+                            Task { await sendTestPushFromMac() }
+                        }
+                        .disabled(settings.pushSubscriptions.isEmpty || isSendingTestPush)
+                        Button("すべて削除", role: .destructive) {
+                            core.removeAllPushSubscriptions()
+                            pushTestMessage = ""
+                        }
+                        .disabled(settings.pushSubscriptions.isEmpty)
+                    }
+                    if !pushTestMessage.isEmpty {
+                        Text(pushTestMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                } header: {
+                    Text("Push 通知")
+                } footer: {
+                    Text("テスト通知で iPhone に届くか確認できます。HTTP 410 の購読は送信時に自動削除されます。")
                 }
 
                 Section("起動") {
@@ -128,9 +170,6 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .navigationTitle("Insta360 Sync 設定")
             .frame(minWidth: 540, minHeight: 620)
-            .onAppear {
-                httpsPortText = String(settings.httpsPort)
-            }
         }
     }
 
@@ -163,15 +202,225 @@ struct SettingsView: View {
         }
     }
 
-    private func applyHTTPSPort(from rawValue: String? = nil) {
-        let text = rawValue ?? httpsPortText
-        guard let port = Int(text), (1024 ... 65535).contains(port) else { return }
-        let newPort = UInt16(port)
-        guard settings.httpsPort != newPort else { return }
-        settings.httpsPort = newPort
-        httpsPortText = String(newPort)
+    private func sendTestPushFromMac() async {
+        isSendingTestPush = true
+        defer { isSendingTestPush = false }
+        let results = await core.sendTestPush()
+        if results.isEmpty {
+            pushTestMessage = "購読が登録されていません"
+            return
+        }
+        let lines = results.map { formatPushDeliveryResult($0) }
+        pushTestMessage = lines.joined(separator: "\n\n")
+    }
+
+    private func formatPushDeliveryResult(_ result: PushDeliveryResult) -> String {
+        var lines: [String] = []
+        if result.ok {
+            lines.append("✓ \(result.endpointHost) …\(result.endpointSuffix)")
+            lines.append("HTTP \(result.statusCode ?? 0)")
+        } else {
+            lines.append("✗ \(result.endpointHost) …\(result.endpointSuffix)")
+            if let status = result.statusCode {
+                lines.append("HTTP \(status)\(result.reason.map { ": \($0)" } ?? "")")
+            } else {
+                lines.append(result.error ?? "失敗")
+            }
+        }
+        if let payloadBytes = result.payloadBytes {
+            lines.append("payload: \(payloadBytes) bytes")
+        }
+        if let apnsID = result.apnsID {
+            lines.append("apns-id: \(apnsID)")
+        }
+        for (key, value) in result.responseHeaders.sorted(by: { $0.key < $1.key })
+            where key.lowercased() != "apns-id" {
+            lines.append("\(key): \(value)")
+        }
+        if let body = result.responseBody, !body.isEmpty {
+            lines.append("body: \(body)")
+        } else if result.ok {
+            lines.append("body: (empty)")
+        }
+        if !result.ok, let error = result.error {
+            lines.append(error)
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// HTTPS 設定だけを分離し、入力中に Form 全体（Host 解決など）を再描画しない。
+private struct HTTPSServerSettingsSection: View {
+    @Bindable var settings: AppSettings
+    var core: SyncCore
+
+    @State private var httpsPortText = ""
+    @State private var publicHostnameText = ""
+    @State private var tlsCertificatePathText = ""
+    @State private var tlsPrivateKeyPathText = ""
+    /// 表示用フォールバックホスト。入力のたびに Host.current() しない。
+    @State private var fallbackHost = "localhost"
+    @State private var saveMessage = ""
+
+    private var previewURL: String {
+        let host: String = {
+            let custom = publicHostnameText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !custom.isEmpty { return custom }
+            return fallbackHost
+        }()
+        let port = Int(httpsPortText).map(String.init) ?? String(settings.httpsPort)
+        return "https://\(host):\(port)/"
+    }
+
+    private var hasUnsavedChanges: Bool {
+        let hostname = publicHostnameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let certPath = tlsCertificatePathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyPath = tlsPrivateKeyPathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let portMatches: Bool = {
+            guard let port = Int(httpsPortText), (1024 ... 65535).contains(port) else {
+                return httpsPortText == String(settings.httpsPort)
+            }
+            return UInt16(port) == settings.httpsPort
+        }()
+        return !portMatches
+            || hostname != settings.publicHostname
+            || certPath != settings.tlsCertificatePath
+            || keyPath != settings.tlsPrivateKeyPath
+    }
+
+    var body: some View {
+        Section {
+            TextField("HTTPS ポート", text: $httpsPortText)
+                .frame(width: 88)
+                .multilineTextAlignment(.trailing)
+
+            TextField("公開ホスト名", text: $publicHostnameText)
+
+            HStack(spacing: 8) {
+                TextField("証明書 PEM（fullchain）", text: $tlsCertificatePathText)
+                Button("選択…") { chooseTLSFile(for: .certificate) }
+            }
+
+            HStack(spacing: 8) {
+                TextField("秘密鍵 PEM", text: $tlsPrivateKeyPathText)
+                Button("選択…") { chooseTLSFile(for: .privateKey) }
+            }
+
+            LabeledContent("PWA URL（プレビュー）") {
+                Text(previewURL)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Button("保存して反映") { applyHTTPSServerSettings() }
+                    .disabled(!hasUnsavedChanges)
+                if hasUnsavedChanges {
+                    Text("未保存の変更があります")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if !saveMessage.isEmpty {
+                    Text(saveMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("PWA / HTTPS サーバー")
+        } footer: {
+            Text(
+                "入力後は「保存して反映」を押してください（実行中ならサーバーを再起動します）。公開ホスト名はメニューバーと「PWA を開く」に使います。Let's Encrypt は fullchain.pem と privkey.pem を指定（両方空なら自己署名）。"
+            )
+        }
+        .onAppear {
+            httpsPortText = String(settings.httpsPort)
+            publicHostnameText = settings.publicHostname
+            tlsCertificatePathText = settings.tlsCertificatePath
+            tlsPrivateKeyPathText = settings.tlsPrivateKeyPath
+            fallbackHost = cachedFallbackHost()
+            saveMessage = ""
+        }
+    }
+
+    private enum TLSFileKind {
+        case certificate
+        case privateKey
+    }
+
+    private func cachedFallbackHost() -> String {
+        let custom = settings.publicHostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { return custom }
+        if settings.usesCustomTLSCertificate { return "localhost" }
+        return TLSCertificateEndpoints.current().commonName
+    }
+
+    private func chooseTLSFile(for kind: TLSFileKind) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.prompt = "選択"
+        panel.message = kind == .certificate
+            ? "証明書 PEM（fullchain.pem 推奨）を選択してください。"
+            : "秘密鍵 PEM（privkey.pem）を選択してください。"
+        if panel.runModal() == .OK, let url = panel.url {
+            switch kind {
+            case .certificate:
+                tlsCertificatePathText = url.path
+            case .privateKey:
+                tlsPrivateKeyPathText = url.path
+            }
+            saveMessage = ""
+        }
+    }
+
+    private func applyHTTPSServerSettings() {
+        var changed = false
+
+        if let port = Int(httpsPortText), (1024 ... 65535).contains(port) {
+            let newPort = UInt16(port)
+            if settings.httpsPort != newPort {
+                settings.httpsPort = newPort
+                changed = true
+            }
+            httpsPortText = String(newPort)
+        } else {
+            httpsPortText = String(settings.httpsPort)
+        }
+
+        let hostname = publicHostnameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if settings.publicHostname != hostname {
+            settings.publicHostname = hostname
+            publicHostnameText = hostname
+            changed = true
+        }
+
+        let certPath = tlsCertificatePathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if settings.tlsCertificatePath != certPath {
+            settings.tlsCertificatePath = certPath
+            tlsCertificatePathText = certPath
+            changed = true
+        }
+
+        let keyPath = tlsPrivateKeyPathText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if settings.tlsPrivateKeyPath != keyPath {
+            settings.tlsPrivateKeyPath = keyPath
+            tlsPrivateKeyPathText = keyPath
+            changed = true
+        }
+
+        guard changed else {
+            saveMessage = "変更はありません"
+            return
+        }
+
         if case .running = core.appStatus {
             Task { await core.restart() }
+            saveMessage = "保存しました（サーバーを再起動しました）"
+        } else {
+            saveMessage = "保存しました"
         }
     }
 }

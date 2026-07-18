@@ -3,19 +3,32 @@ import Network
 
 final class HTTPServer: @unchecked Sendable {
     private let port: UInt16
+    private let tlsCertificatePath: String?
+    private let tlsPrivateKeyPath: String?
     private var listener: NWListener?
     private weak var core: SyncCore?
     private let staticRoot: URL
 
-    init(port: UInt16, staticRoot: URL, core: SyncCore) {
+    init(
+        port: UInt16,
+        staticRoot: URL,
+        core: SyncCore,
+        tlsCertificatePath: String? = nil,
+        tlsPrivateKeyPath: String? = nil
+    ) {
         self.port = port
         self.staticRoot = staticRoot
         self.core = core
+        self.tlsCertificatePath = tlsCertificatePath
+        self.tlsPrivateKeyPath = tlsPrivateKeyPath
     }
 
     func start() throws {
         guard listener == nil else { return }
-        let identity = try TLSConfiguration.loadOrCreateIdentity(directory: TLSConfiguration.storageDirectory)
+        let identity = try TLSConfiguration.loadIdentity(
+            certificatePath: tlsCertificatePath,
+            privateKeyPath: tlsPrivateKeyPath
+        )
         let params = TLSConfiguration.makeServerParameters(identity: identity)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             throw HTTPServerError.invalidPort
@@ -103,7 +116,7 @@ final class HTTPServer: @unchecked Sendable {
                 return
             }
             Task { @MainActor in
-                let response = core.handleAPI(request)
+                let response = await core.handleAPI(request)
                 self.send(connection, request: request, data: response)
             }
             return
@@ -200,6 +213,8 @@ struct PublicSettingsDTO: Encodable {
     var destinationRoot: String
     var folderStructureMode: String
     var vapidPublicKey: String
+    var vapidSubject: String
+    var vapidSubjectWarning: String?
     var cameras: [CameraDTO]
 }
 
@@ -229,4 +244,36 @@ struct BackupStatusDTO: Encodable {
     var progress: BackupProgress?
     var pending: [PendingBackup]
     var history: [BackupHistoryEntry]
+}
+
+struct PushSubscriptionDTO: Encodable {
+    var endpoint: String
+    var endpointHost: String
+    var endpointSuffix: String
+    var createdAt: Date
+}
+
+struct PushUnsubscribeRequest: Decodable {
+    var endpoint: String?
+}
+
+struct PushTestRequest: Decodable {
+    var endpoint: String?
+}
+
+struct PushTestResponseDTO: Encodable {
+    var results: [PushDeliveryResultDTO]
+}
+
+struct PushDeliveryResultDTO: Encodable {
+    var endpointSuffix: String
+    var endpointHost: String
+    var ok: Bool
+    var statusCode: Int?
+    var error: String?
+    var apnsID: String?
+    var reason: String?
+    var responseBody: String?
+    var responseHeaders: [String: String]
+    var payloadBytes: Int?
 }

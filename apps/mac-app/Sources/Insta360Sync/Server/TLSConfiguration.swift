@@ -146,6 +146,109 @@ enum TLSConfiguration {
         return params
     }
 
+    /// 設定に応じてカスタム PEM または自己署名の SecIdentity を返す。
+    static func loadIdentity(
+        certificatePath: String?,
+        privateKeyPath: String?,
+        directory: URL = storageDirectory
+    ) throws -> SecIdentity {
+        let cert = certificatePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let key = privateKeyPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !cert.isEmpty || !key.isEmpty {
+            guard !cert.isEmpty, !key.isEmpty else {
+                throw TLSError.customCertificateIncomplete
+            }
+            return try loadIdentityFromPEM(
+                certificatePath: URL(fileURLWithPath: cert),
+                privateKeyPath: URL(fileURLWithPath: key)
+            )
+        }
+        return try loadOrCreateIdentity(directory: directory)
+    }
+
+    /// Let's Encrypt 等の証明書 PEM + 秘密鍵 PEM から SecIdentity を構築する。
+    /// `certificatePath` は fullchain.pem（リーフ + 中間）を推奨。
+    static func loadIdentityFromPEM(certificatePath: URL, privateKeyPath: URL) throws -> SecIdentity {
+        let certData: Data
+        let keyData: Data
+        do {
+            certData = try Data(contentsOf: certificatePath)
+        } catch {
+            throw TLSError.customCertificateUnreadable(certificatePath.path, underlying: error)
+        }
+        do {
+            keyData = try Data(contentsOf: privateKeyPath)
+        } catch {
+            throw TLSError.customCertificateUnreadable(privateKeyPath.path, underlying: error)
+        }
+
+        guard let certPEM = String(data: certData, encoding: .utf8),
+              certPEM.contains("BEGIN CERTIFICATE") else {
+            throw TLSError.customCertificateInvalidPEM(certificatePath.path)
+        }
+        guard let keyPEM = String(data: keyData, encoding: .utf8),
+              keyPEM.contains("BEGIN") && keyPEM.contains("PRIVATE KEY") else {
+            throw TLSError.customCertificateInvalidPEM(privateKeyPath.path)
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Insta360Sync-tls-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let (leafPath, chainPath) = try splitCertificateChain(pem: certPEM, into: tempDir)
+        let p12Path = tempDir.appendingPathComponent("custom.p12")
+        try exportPKCS12(
+            certificatePath: leafPath,
+            privateKeyPath: privateKeyPath,
+            chainPath: chainPath,
+            p12Path: p12Path
+        )
+        AppLogger.shared.info(
+            "Loaded custom TLS certificate from \(certificatePath.path)",
+            category: .server
+        )
+        return try importIdentity(from: p12Path)
+    }
+
+    /// fullchain PEM をリーフと中間チェーンに分割する。チェーンが無ければ `chainPath` は nil。
+    private static func splitCertificateChain(
+        pem: String,
+        into directory: URL
+    ) throws -> (leaf: URL, chain: URL?) {
+        var blocks: [String] = []
+        var current: [String] = []
+        var inside = false
+        for line in pem.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            let text = String(line)
+            if text.hasPrefix("-----BEGIN"), text.contains("CERTIFICATE") {
+                inside = true
+                current = [text]
+                continue
+            }
+            if inside {
+                current.append(text)
+                if text.hasPrefix("-----END") {
+                    blocks.append(current.joined(separator: "\n"))
+                    inside = false
+                    current = []
+                }
+            }
+        }
+        guard let leaf = blocks.first else {
+            throw TLSError.customCertificateInvalidPEM(directory.path)
+        }
+        let leafPath = directory.appendingPathComponent("leaf.crt")
+        try (leaf + "\n").write(to: leafPath, atomically: true, encoding: .utf8)
+        guard blocks.count > 1 else {
+            return (leafPath, nil)
+        }
+        let chainPath = directory.appendingPathComponent("chain.crt")
+        let chainPEM = blocks.dropFirst().joined(separator: "\n") + "\n"
+        try chainPEM.write(to: chainPath, atomically: true, encoding: .utf8)
+        return (leafPath, chainPath)
+    }
+
     static func loadOrCreateIdentity(directory: URL) throws -> SecIdentity {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -207,21 +310,48 @@ enum TLSConfiguration {
         let certPath = directory.appendingPathComponent("server.crt")
         let keyPath = directory.appendingPathComponent("server.key")
         try generateCertificate(certPath: certPath, keyPath: keyPath, endpoints: endpoints)
+        try exportPKCS12(
+            certificatePath: certPath,
+            privateKeyPath: keyPath,
+            chainPath: nil,
+            p12Path: p12Path
+        )
+    }
 
+    /// リーフ証明書・秘密鍵・任意の中間チェーンから PKCS#12 を書き出す。
+    private static func exportPKCS12(
+        certificatePath: URL,
+        privateKeyPath: URL,
+        chainPath: URL?,
+        p12Path: URL
+    ) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
-        process.arguments = [
+        var arguments = [
             "pkcs12", "-export",
             "-out", p12Path.path,
-            "-inkey", keyPath.path,
-            "-in", certPath.path,
+            "-inkey", privateKeyPath.path,
+            "-in", certificatePath.path,
             "-passout", "pass:\(p12Passphrase)",
             "-name", "Insta360 Sync",
         ]
+        if let chainPath {
+            arguments.append(contentsOf: ["-certfile", chainPath.path])
+        }
+        process.arguments = arguments
+        let errPipe = Pipe()
+        process.standardError = errPipe
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw TLSError.certificateGenerationFailed
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errText = String(data: errData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            AppLogger.shared.error(
+                "openssl pkcs12 export failed: \(errText.isEmpty ? "exit \(process.terminationStatus)" : errText)",
+                category: .server
+            )
+            throw TLSError.customCertificateExportFailed
         }
     }
 
@@ -279,13 +409,41 @@ enum TLSError: LocalizedError {
     case certificateImportFailed
     case keyImportFailed
     case identityNotFound
+    case customCertificateIncomplete
+    case customCertificateUnreadable(String, underlying: Error?)
+    case customCertificateInvalidPEM(String)
+    case customCertificateExportFailed
 
     var errorDescription: String? {
         switch self {
-        case .certificateGenerationFailed: "TLS 証明書の生成に失敗しました"
-        case .certificateImportFailed: "TLS 証明書の読み込みに失敗しました"
-        case .keyImportFailed: "TLS 秘密鍵の読み込みに失敗しました"
-        case .identityNotFound: "TLS identity の作成に失敗しました"
+        case .certificateGenerationFailed:
+            return "TLS 証明書の生成に失敗しました"
+        case .certificateImportFailed:
+            return "TLS 証明書の読み込みに失敗しました"
+        case .keyImportFailed:
+            return "TLS 秘密鍵の読み込みに失敗しました"
+        case .identityNotFound:
+            return "TLS identity の作成に失敗しました"
+        case .customCertificateIncomplete:
+            return "カスタム証明書を使うには証明書 PEM と秘密鍵 PEM の両方のパスが必要です"
+        case .customCertificateUnreadable(let path, let underlying):
+            let hint: String
+            if path.contains("/etc/letsencrypt/") {
+                hint = " （/etc/letsencrypt は root 専用です。~/Insta360Sync/tls などへコピーしてそのパスを指定してください）"
+            } else if let nsError = underlying as? NSError,
+                      nsError.domain == NSCocoaErrorDomain,
+                      nsError.code == NSFileReadNoPermissionError {
+                hint = " （権限がありません。このユーザーが読める場所へコピーしてください）"
+            } else if let underlying {
+                hint = " （\(underlying.localizedDescription)）"
+            } else {
+                hint = ""
+            }
+            return "TLS 証明書ファイルを読めません: \(path)\(hint)"
+        case .customCertificateInvalidPEM(let path):
+            return "TLS 証明書 PEM が不正です: \(path)"
+        case .customCertificateExportFailed:
+            return "カスタム TLS 証明書の PKCS#12 変換に失敗しました（証明書と秘密鍵の対応を確認してください）"
         }
     }
 }

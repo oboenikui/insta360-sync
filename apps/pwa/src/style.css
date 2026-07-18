@@ -169,6 +169,46 @@ button.secondary {
   gap: 8px;
 }
 
+.push-subscription-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid #1f2937;
+}
+
+.push-subscription-item:last-child {
+  border-bottom: 0;
+}
+
+.push-subscription-info {
+  display: grid;
+  gap: 4px;
+}
+
+#pushStatus {
+  white-space: pre-wrap;
+}
+
+.push-event-log {
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: #0b1220;
+  border-radius: 10px;
+  padding: 10px 12px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.push-event-log .event-ok {
+  color: #86efac;
+}
+
+.push-event-log .event-error {
+  color: #fca5a5;
+}
+
 .card h3 {
   margin: 0;
   font-size: 16px;

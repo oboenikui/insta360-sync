@@ -17,10 +17,20 @@ struct VAPIDKeys: Sendable {
         )
     }
 
-    /// Apple は `.local` など非標準ドメインの mailto を BadJwtToken で拒否する。
+    /// Apple は `.local` など非標準ドメインの mailto / https を BadJwtToken で拒否する。
+    static let defaultSubject = "https://github.com/oboenikui/insta360-sync"
+
+    static func isProblematicSubjectForApple(_ subject: String) -> Bool {
+        let lower = subject.lowercased()
+        return lower.contains(".local")
+            || lower.contains("@localhost")
+            || lower.hasPrefix("mailto:openclaw@localhost")
+            || lower.contains("://localhost")
+    }
+
     func makeJWT(
         audience: String,
-        subject: String = "https://github.com/oboenikui/insta360-sync"
+        subject: String = VAPIDKeys.defaultSubject
     ) throws -> String {
         guard let privateKeyData = Base64URL.decode(privateKeyBase64URL) else {
             throw WebPushError.invalidKeys
@@ -64,18 +74,32 @@ enum Base64URL {
 enum WebPushError: LocalizedError {
     case invalidKeys
     case invalidSubscription
-    case deliveryFailed(Int, String)
+    case deliveryFailed(PushGatewayResponse)
+
+    var httpStatusCode: Int? {
+        if case .deliveryFailed(let gateway) = self { return gateway.statusCode }
+        return nil
+    }
+
+    var gatewayResponse: PushGatewayResponse? {
+        if case .deliveryFailed(let gateway) = self { return gateway }
+        return nil
+    }
 
     var errorDescription: String? {
         switch self {
-        case .invalidKeys: "Invalid VAPID keys"
-        case .invalidSubscription: "Invalid push subscription"
-        case .deliveryFailed(let code, let body):
-            if body.isEmpty {
-                "Push delivery failed with status \(code)"
-            } else {
-                "Push delivery failed with status \(code): \(body)"
+        case .invalidKeys:
+            return "Invalid VAPID keys"
+        case .invalidSubscription:
+            return "Invalid push subscription"
+        case .deliveryFailed(let gateway):
+            if let reason = gateway.reason {
+                return "Push delivery failed with status \(gateway.statusCode): \(reason)"
             }
+            if gateway.responseBody.isEmpty {
+                return "Push delivery failed with status \(gateway.statusCode)"
+            }
+            return "Push delivery failed with status \(gateway.statusCode): \(gateway.responseBody)"
         }
     }
 }

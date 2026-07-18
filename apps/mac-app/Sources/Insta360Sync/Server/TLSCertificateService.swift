@@ -4,8 +4,9 @@ import Security
 
 /// PWA / モバイル端末に配布するための TLS 証明書アクセサ。
 ///
-/// TLS サーバーで使っている自己署名証明書 (server.crt) をそのまま
-/// ルート証明書として iOS / Android にインストールしてもらう想定。
+/// 自己署名時は server.crt をルートとして配布する。
+/// Let's Encrypt 等のカスタム証明書時はリーフ（+ チェーン）のメタ情報のみ返し、
+/// mobileconfig（ルート信頼用）は提供しない。
 enum TLSCertificateService {
     struct Info: Encodable {
         var commonName: String
@@ -18,23 +19,44 @@ enum TLSCertificateService {
         var serialNumber: String?
         var downloadBaseName: String
         var pem: String
+        /// カスタム（公開 CA）証明書を使用中か。true のとき端末へのルートインストールは不要。
+        var isCustomCertificate: Bool
+        /// ルート証明書のインストールが推奨されるか（自己署名のみ true）。
+        var installRecommended: Bool
     }
 
-    /// PEM 形式（テキスト）のサーバー証明書。
-    static func pemData() throws -> Data {
-        try Data(contentsOf: TLSConfiguration.certificatePEMURL)
+    /// 使用中の証明書 PEM の URL（カスタム path または自己署名 server.crt）。
+    static func activeCertificatePEMURL(customPath: String?) -> URL {
+        let trimmed = customPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return URL(fileURLWithPath: trimmed)
+        }
+        return TLSConfiguration.certificatePEMURL
     }
 
-    /// DER 形式（バイナリ）のサーバー証明書。
-    static func derData() throws -> Data {
-        let pem = try String(contentsOf: TLSConfiguration.certificatePEMURL, encoding: .utf8)
-        return try derData(fromPEM: pem)
+    /// PEM 形式（テキスト）のサーバー証明書（fullchain の場合はそのまま）。
+    static func pemData(customPath: String? = nil) throws -> Data {
+        let url = activeCertificatePEMURL(customPath: customPath)
+        guard FileManager.default.isReadableFile(atPath: url.path) else {
+            throw TLSCertificateServiceError.fileUnreadable(url.path)
+        }
+        return try Data(contentsOf: url)
     }
 
-    /// iOS 向けの構成プロファイル (.mobileconfig)。
-    /// ルート証明書ペイロード (com.apple.security.root) 1 件だけを含む。
-    static func mobileConfigData() throws -> Data {
-        let der = try derData()
+    /// DER 形式（バイナリ）のリーフ証明書。
+    static func derData(customPath: String? = nil) throws -> Data {
+        let pem = try String(contentsOf: activeCertificatePEMURL(customPath: customPath), encoding: .utf8)
+        return try leafDERData(fromPEM: pem)
+    }
+
+    /// iOS 向けの構成プロファイル (.mobileconfig)。自己署名ルートのみ。
+    static func mobileConfigData(customPath: String? = nil) throws -> Data {
+        let trimmed = customPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            throw TLSCertificateServiceError.mobileConfigNotApplicable
+        }
+
+        let der = try derData(customPath: nil)
         let endpoints = TLSConfiguration.loadStoredEndpoints() ?? TLSCertificateEndpoints.current()
 
         let certUUID = deterministicUUIDString(seed: der, salt: "cert")
@@ -74,20 +96,26 @@ enum TLSCertificateService {
     }
 
     /// 証明書のメタ情報 (フィンガープリント・有効期限・SAN 等)。
-    static func makeInfo() throws -> Info {
-        let der = try derData()
-        let pem = try String(contentsOf: TLSConfiguration.certificatePEMURL, encoding: .utf8)
-        let endpoints = TLSConfiguration.loadStoredEndpoints() ?? TLSCertificateEndpoints.current()
+    static func makeInfo(customPath: String? = nil) throws -> Info {
+        let isCustom = !(customPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        let pemURL = activeCertificatePEMURL(customPath: customPath)
+        let pem = try String(contentsOf: pemURL, encoding: .utf8)
+        let der = try leafDERData(fromPEM: pem)
 
         var notBefore: Date?
         var notAfter: Date?
         var serialNumber: String?
+        var commonName = "unknown"
+        var dnsNames: [String] = []
+        var ipAddresses: [String] = []
 
         if let cert = SecCertificateCreateWithData(nil, der as CFData) {
             let valueKey = kSecPropertyKeyValue as String
             let queryKeys = [
                 kSecOIDX509V1ValidityNotBefore as String,
                 kSecOIDX509V1ValidityNotAfter as String,
+                kSecOIDX509V1SubjectName as String,
+                kSecOIDSubjectAltName as String,
             ] as CFArray
             if let dict = SecCertificateCopyValues(cert, queryKeys, nil) as? [String: Any] {
                 if let entry = dict[kSecOIDX509V1ValidityNotBefore as String] as? [String: Any],
@@ -98,35 +126,56 @@ enum TLSCertificateService {
                    let value = entry[valueKey] as? Double {
                     notAfter = Date(timeIntervalSinceReferenceDate: value)
                 }
+                if let cn = subjectCommonName(from: dict) {
+                    commonName = cn
+                }
+                let sans = subjectAltNames(from: dict)
+                dnsNames = sans.dns
+                ipAddresses = sans.ips
             }
             if let data = SecCertificateCopySerialNumberData(cert, nil) as Data? {
                 serialNumber = hexColonSeparated(data)
             }
         }
 
+        if !isCustom {
+            let endpoints = TLSConfiguration.loadStoredEndpoints() ?? TLSCertificateEndpoints.current()
+            commonName = endpoints.commonName
+            dnsNames = endpoints.dnsNames
+            ipAddresses = endpoints.ipAddresses
+        } else if dnsNames.isEmpty, !commonName.isEmpty {
+            dnsNames = [commonName]
+        }
+
         let sha256 = hexColonSeparated(Data(SHA256.hash(data: der)))
         let sha1 = hexColonSeparated(Data(Insecure.SHA1.hash(data: der)))
 
-        let hostSlug = endpoints.commonName
+        let hostSlug = commonName
             .replacingOccurrences(of: ".", with: "-")
             .replacingOccurrences(of: " ", with: "-")
 
         return Info(
-            commonName: endpoints.commonName,
-            dnsNames: endpoints.dnsNames,
-            ipAddresses: endpoints.ipAddresses,
+            commonName: commonName,
+            dnsNames: dnsNames,
+            ipAddresses: ipAddresses,
             notBefore: notBefore,
             notAfter: notAfter,
             sha256Fingerprint: sha256,
             sha1Fingerprint: sha1,
             serialNumber: serialNumber,
             downloadBaseName: "insta360-sync-\(hostSlug)",
-            pem: pem
+            pem: pem,
+            isCustomCertificate: isCustom,
+            installRecommended: !isCustom
         )
     }
 
-    private static func derData(fromPEM pem: String) throws -> Data {
-        let base64 = pem
+    /// fullchain のうち先頭（リーフ）の PEM ブロックだけを DER にする。
+    private static func leafDERData(fromPEM pem: String) throws -> Data {
+        guard let leafPEM = firstPEMBlock(in: pem, typeContaining: "CERTIFICATE") else {
+            throw TLSCertificateServiceError.invalidPEM
+        }
+        let base64 = leafPEM
             .split(whereSeparator: \.isNewline)
             .filter { !$0.hasPrefix("-----") }
             .joined()
@@ -134,6 +183,64 @@ enum TLSCertificateService {
             throw TLSCertificateServiceError.invalidPEM
         }
         return data
+    }
+
+    private static func firstPEMBlock(in pem: String, typeContaining: String) -> String? {
+        let lines = pem.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        var collecting: [String] = []
+        var inside = false
+        for line in lines {
+            let text = String(line)
+            if text.hasPrefix("-----BEGIN"), text.contains(typeContaining) {
+                inside = true
+                collecting = [text]
+                continue
+            }
+            if inside {
+                collecting.append(text)
+                if text.hasPrefix("-----END") {
+                    return collecting.joined(separator: "\n")
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func subjectCommonName(from dict: [String: Any]) -> String? {
+        let valueKey = kSecPropertyKeyValue as String
+        let labelKey = kSecPropertyKeyLabel as String
+        guard let entry = dict[kSecOIDX509V1SubjectName as String] as? [String: Any],
+              let values = entry[valueKey] as? [[String: Any]] else {
+            return nil
+        }
+        for item in values {
+            let label = (item[labelKey] as? String) ?? ""
+            if label == "CN" || label.contains("Common Name") {
+                return item[valueKey] as? String
+            }
+        }
+        return nil
+    }
+
+    private static func subjectAltNames(from dict: [String: Any]) -> (dns: [String], ips: [String]) {
+        let valueKey = kSecPropertyKeyValue as String
+        let labelKey = kSecPropertyKeyLabel as String
+        guard let entry = dict[kSecOIDSubjectAltName as String] as? [String: Any],
+              let values = entry[valueKey] as? [[String: Any]] else {
+            return ([], [])
+        }
+        var dns: [String] = []
+        var ips: [String] = []
+        for item in values {
+            let label = ((item[labelKey] as? String) ?? "").lowercased()
+            guard let value = item[valueKey] as? String, !value.isEmpty else { continue }
+            if label.contains("dns") {
+                dns.append(value)
+            } else if label.contains("ip") {
+                ips.append(value)
+            }
+        }
+        return (dns, ips)
     }
 
     private static func hexColonSeparated(_ data: Data) -> String {
@@ -164,12 +271,17 @@ enum TLSCertificateService {
     }
 }
 
-enum TLSCertificateServiceError: LocalizedError {
+enum TLSCertificateServiceError: LocalizedError, Equatable {
     case invalidPEM
+    case fileUnreadable(String)
+    case mobileConfigNotApplicable
 
     var errorDescription: String? {
         switch self {
         case .invalidPEM: "TLS 証明書 PEM の解析に失敗しました"
+        case .fileUnreadable(let path): "TLS 証明書ファイルを読めません: \(path)"
+        case .mobileConfigNotApplicable:
+            "公開 CA（Let's Encrypt 等）の証明書を使用中のため、構成プロファイルのインストールは不要です"
         }
     }
 }

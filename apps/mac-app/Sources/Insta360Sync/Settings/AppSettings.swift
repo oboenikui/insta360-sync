@@ -16,6 +16,10 @@ final class AppSettings: @unchecked Sendable {
         static let apiToken = "apiToken"
         static let vapidPublicKey = "vapidPublicKey"
         static let vapidPrivateKey = "vapidPrivateKey"
+        static let vapidSubject = "vapidSubject"
+        static let publicHostname = "publicHostname"
+        static let tlsCertificatePath = "tlsCertificatePath"
+        static let tlsPrivateKeyPath = "tlsPrivateKeyPath"
         static let autoStartOnLaunch = "autoStartOnLaunch"
         static let pushSubscriptions = "pushSubscriptions"
     }
@@ -44,6 +48,21 @@ final class AppSettings: @unchecked Sendable {
         didSet { defaults.set(Int(httpsPort), forKey: Keys.httpsPort) }
     }
 
+    /// PWA / メニューバー表示用の公開ホスト名（例: sync.example.internal）。空なら自己署名 CN を使う。
+    var publicHostname: String {
+        didSet { defaults.set(publicHostname, forKey: Keys.publicHostname) }
+    }
+
+    /// Let's Encrypt 等の証明書 PEM（fullchain 推奨）。空なら自己署名。
+    var tlsCertificatePath: String {
+        didSet { defaults.set(tlsCertificatePath, forKey: Keys.tlsCertificatePath) }
+    }
+
+    /// 証明書に対応する秘密鍵 PEM。空なら自己署名。
+    var tlsPrivateKeyPath: String {
+        didSet { defaults.set(tlsPrivateKeyPath, forKey: Keys.tlsPrivateKeyPath) }
+    }
+
     var apiToken: String {
         didSet { defaults.set(apiToken, forKey: Keys.apiToken) }
     }
@@ -54,6 +73,11 @@ final class AppSettings: @unchecked Sendable {
 
     var vapidPrivateKey: String {
         didSet { defaults.set(vapidPrivateKey, forKey: Keys.vapidPrivateKey) }
+    }
+
+    /// VAPID JWT の `sub` クレーム。Apple は `.local` / `@localhost` 等を BadJwtToken で拒否する。
+    var vapidSubject: String {
+        didSet { defaults.set(vapidSubject, forKey: Keys.vapidSubject) }
     }
 
     var autoStartOnLaunch: Bool {
@@ -101,6 +125,10 @@ final class AppSettings: @unchecked Sendable {
         let port = defaults.object(forKey: Keys.httpsPort) as? Int ?? Int(Insta360Defaults.httpsPort)
         self.httpsPort = UInt16(clamping: port)
 
+        self.publicHostname = defaults.string(forKey: Keys.publicHostname) ?? ""
+        self.tlsCertificatePath = defaults.string(forKey: Keys.tlsCertificatePath) ?? ""
+        self.tlsPrivateKeyPath = defaults.string(forKey: Keys.tlsPrivateKeyPath) ?? ""
+
         if let token = defaults.string(forKey: Keys.apiToken), !token.isEmpty {
             self.apiToken = token
         } else {
@@ -109,6 +137,7 @@ final class AppSettings: @unchecked Sendable {
 
         self.vapidPublicKey = defaults.string(forKey: Keys.vapidPublicKey) ?? ""
         self.vapidPrivateKey = defaults.string(forKey: Keys.vapidPrivateKey) ?? ""
+        self.vapidSubject = defaults.string(forKey: Keys.vapidSubject) ?? VAPIDKeys.defaultSubject
         self.autoStartOnLaunch = defaults.object(forKey: Keys.autoStartOnLaunch) as? Bool ?? true
 
         if let data = defaults.data(forKey: Keys.pushSubscriptions),
@@ -137,14 +166,28 @@ final class AppSettings: @unchecked Sendable {
         cameras.filter(\.isEnabled)
     }
 
+    /// カスタム証明書（証明書 PEM + 秘密鍵 PEM）が揃っているか。
+    var usesCustomTLSCertificate: Bool {
+        !tlsCertificatePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !tlsPrivateKeyPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var resolvedPublicHost: String {
+        let custom = publicHostname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !custom.isEmpty { return custom }
+        if usesCustomTLSCertificate {
+            return "localhost"
+        }
+        return TLSCertificateEndpoints.current().commonName
+    }
+
     var pwaURL: URL {
-        URL(string: "https://localhost:\(httpsPort)/")!
+        URL(string: "https://\(resolvedPublicHost):\(httpsPort)/")!
     }
 
     /// iPhone からアクセスするときの URL 例（ホスト名は環境により異なる）。
     var pwaAccessURLDescription: String {
-        let host = TLSCertificateEndpoints.current().commonName
-        return "https://\(host):\(httpsPort)/"
+        "https://\(resolvedPublicHost):\(httpsPort)/"
     }
 
     private func persistCameras() {
@@ -158,9 +201,20 @@ final class AppSettings: @unchecked Sendable {
     }
 }
 
-struct PushSubscriptionRecord: Codable, Hashable, Sendable {
+struct PushSubscriptionRecord: Codable, Hashable, Sendable, Identifiable {
     var endpoint: String
     var p256dh: String
     var auth: String
     var createdAt: Date
+
+    var id: String { endpoint }
+
+    var endpointHost: String {
+        guard let host = URL(string: endpoint)?.host else { return endpoint }
+        return host
+    }
+
+    var endpointSuffix: String {
+        String(endpoint.suffix(24))
+    }
 }

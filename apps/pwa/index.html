@@ -57,6 +57,49 @@
           </section>
 
           <section class="card">
+            <h3>Push 通知</h3>
+            <p id="serviceWorkerStatus" class="muted">Service Worker: 確認中…</p>
+            <div id="pushDiagnostics" class="muted">診断情報を読み込み中…</div>
+            <div id="pushEventLog" class="push-event-log muted">SW イベント: まだありません</div>
+            <div id="pushSubscriptionList" class="muted">読み込み中…</div>
+            <div class="settings-actions">
+              <button id="sendTestPush" type="button">テスト通知を送信</button>
+              <button id="pingServiceWorker" type="button" class="secondary">SW に ping</button>
+              <button id="clearPushSubscriptions" type="button" class="secondary">すべて削除</button>
+            </div>
+            <p id="pushStatus" class="muted"></p>
+            <details class="cert-help">
+              <summary>Safari で Push をデバッグする</summary>
+              <div class="cert-help-body">
+                <p class="muted">
+                  MeshCore 等のドキュメントで言う「.local 拒否」は
+                  <strong>PWA の URL（<code>https://xxx.local</code>）ではなく</strong>、
+                  サーバーが JWT に入れる <strong>VAPID <code>sub</code></strong>
+                  （例: <code>mailto:noreply@meshcore.local</code>）の話です。
+                  403 BadJwtToken になります。201 が出ていれば <code>sub</code> は通過済みです。
+                </p>
+                <p class="muted">ページの Web インスペクタ → コンソール:</p>
+                <pre class="mono">navigator.serviceWorker.ready
+  .then(r => r.pushManager.getSubscription())
+  .then(s => console.log(s?.endpoint?.slice(-24)))</pre>
+                <p class="muted">
+                  ブレークポイントがヒットしない場合、<strong>別 endpoint への送信</strong>か
+                  <strong>active 以外の SW をデバッグしている</strong>可能性があります。
+                  診断情報の endpoint 末尾（…xxxx）が Mac 側と一致するか確認してください。
+                </p>
+                <ol>
+                  <li>Safari メニュー → 設定 → 詳細 → 「メニューバーに"開発"メニューを表示」</li>
+                  <li>開発 → Service Workers → このサイトの <code>sw.js</code> → インスペクト</li>
+                  <li>テスト送信<strong>の前に</strong> SW 用インスペクタを開いておく</li>
+                  <li>または URL に <code>?debugPush=1</code> を付けて開く（push 受信時に <code>debugger</code> で停止）</li>
+                  <li>SW コンソールに <code>[Insta360Sync SW] push event received</code> が出るか確認</li>
+                  <li>システム設定 → 通知 → Safari で通知が許可されているか確認</li>
+                </ol>
+              </div>
+            </details>
+          </section>
+
+          <section class="card">
             <h3>ルート証明書</h3>
             <p class="muted">
               Mac が生成した自己署名ルート証明書を端末にインストールすると、ブラウザや PWA が
