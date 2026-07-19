@@ -8,7 +8,8 @@ final class AppSettings: @unchecked Sendable {
 
     private enum Keys {
         static let cameras = "cameras"
-        static let destinationRoot = "destinationRoot"
+        /// 旧グローバル保存先。カメラごとの `destinationRootPath` へ移行後に削除する。
+        static let legacyDestinationRoot = "destinationRoot"
         static let folderStructureMode = "folderStructureMode"
         static let duplicateFileBehavior = "duplicateFileBehavior"
         static let scanIntervalSeconds = "scanIntervalSeconds"
@@ -26,10 +27,6 @@ final class AppSettings: @unchecked Sendable {
 
     var cameras: [CameraProfile] {
         didSet { persistCameras() }
-    }
-
-    var destinationRoot: URL {
-        didSet { defaults.set(destinationRoot.path, forKey: Keys.destinationRoot) }
     }
 
     var folderStructureMode: FolderStructureMode {
@@ -98,13 +95,6 @@ final class AppSettings: @unchecked Sendable {
             self.cameras = []
         }
 
-        if let path = defaults.string(forKey: Keys.destinationRoot) {
-            self.destinationRoot = URL(fileURLWithPath: path)
-        } else {
-            self.destinationRoot = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Pictures/Insta360Backup", isDirectory: true)
-        }
-
         if let raw = defaults.string(forKey: Keys.folderStructureMode),
            let mode = FolderStructureMode(rawValue: raw) {
             self.folderStructureMode = mode
@@ -156,6 +146,25 @@ final class AppSettings: @unchecked Sendable {
             self.vapidPublicKey = keys.publicKeyBase64URL
             self.vapidPrivateKey = keys.privateKeyBase64URL
         }
+
+        migrateLegacyDestinationRootIfNeeded(defaults: defaults)
+    }
+
+    /// 旧グローバル `destinationRoot` を各カメラへ引き継ぎ、キーを削除する。
+    private func migrateLegacyDestinationRootIfNeeded(defaults: UserDefaults) {
+        guard let legacyPath = defaults.string(forKey: Keys.legacyDestinationRoot),
+              !legacyPath.isEmpty else { return }
+
+        var updated = cameras
+        var didMigrate = false
+        for index in updated.indices where !updated[index].hasDestination {
+            updated[index].destinationRootPath = legacyPath
+            didMigrate = true
+        }
+        if didMigrate {
+            cameras = updated
+        }
+        defaults.removeObject(forKey: Keys.legacyDestinationRoot)
     }
 
     func camera(for id: UUID) -> CameraProfile? {
@@ -163,7 +172,7 @@ final class AppSettings: @unchecked Sendable {
     }
 
     func enabledCameras() -> [CameraProfile] {
-        cameras.filter(\.isEnabled)
+        cameras.filter { $0.isEnabled && $0.hasDestination }
     }
 
     /// カスタム証明書（証明書 PEM + 秘密鍵 PEM）が揃っているか。

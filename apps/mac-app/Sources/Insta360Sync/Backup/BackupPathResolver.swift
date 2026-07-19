@@ -4,19 +4,20 @@ enum BackupPathResolver {
     static func destinationURL(
         for file: Insta360CameraFile,
         camera: CameraProfile,
+        destinationRoot: URL,
         settings: AppSettings
     ) -> URL {
         let filename = file.name
         switch settings.folderStructureMode {
         case .preserveOriginal:
             let relative = file.sourcePath.hasPrefix("/") ? String(file.sourcePath.dropFirst()) : file.sourcePath
-            return settings.destinationRoot
+            return destinationRoot
                 .appendingPathComponent(camera.folderSlug, isDirectory: true)
                 .appendingPathComponent(relative, isDirectory: false)
         case .byDate:
             let date = file.createdAt ?? parseCreationDate(fromFilename: filename) ?? Date()
             let folder = dateFolderName(date)
-            return settings.destinationRoot
+            return destinationRoot
                 .appendingPathComponent(folder, isDirectory: true)
                 .appendingPathComponent(filename, isDirectory: false)
         }

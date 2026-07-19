@@ -8,6 +8,17 @@ struct BackupResult: Sendable {
     var protocolKind: CameraProtocolKind
 }
 
+enum BackupEngineError: LocalizedError {
+    case destinationNotConfigured
+
+    var errorDescription: String? {
+        switch self {
+        case .destinationNotConfigured:
+            "カメラの保存先が設定されていません"
+        }
+    }
+}
+
 final class BackupEngine: @unchecked Sendable {
     private let downloader = FileDownloader()
 
@@ -16,7 +27,10 @@ final class BackupEngine: @unchecked Sendable {
         settings: AppSettings,
         progress: @escaping @Sendable (BackupProgress) -> Void
     ) async throws -> BackupResult {
-        try FileManager.default.createDirectory(at: settings.destinationRoot, withIntermediateDirectories: true)
+        guard let destinationRoot = camera.destinationRoot else {
+            throw BackupEngineError.destinationNotConfigured
+        }
+        try FileManager.default.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
 
         let session = try await CameraSession.connect()
         defer { session.close() }
@@ -31,10 +45,10 @@ final class BackupEngine: @unchecked Sendable {
             )
         )
 
-        let manifest = SyncManifestStore.load(destinationRoot: settings.destinationRoot, cameraID: camera.id)
+        let manifest = SyncManifestStore.load(destinationRoot: destinationRoot, cameraID: camera.id)
         let manifestScheduler = SyncManifestFlushScheduler(
             manifest: manifest,
-            destinationRoot: settings.destinationRoot,
+            destinationRoot: destinationRoot,
             cameraID: camera.id
         )
 
@@ -69,7 +83,12 @@ final class BackupEngine: @unchecked Sendable {
                 continue
             }
 
-            let proposed = BackupPathResolver.destinationURL(for: file, camera: camera, settings: settings)
+            let proposed = BackupPathResolver.destinationURL(
+                for: file,
+                camera: camera,
+                destinationRoot: destinationRoot,
+                settings: settings
+            )
             let resolution = BackupPathResolver.resolveDuplicateDestination(
                 proposed: proposed,
                 behavior: settings.duplicateFileBehavior,
@@ -111,6 +130,7 @@ final class BackupEngine: @unchecked Sendable {
                             rawPath: rawPath,
                             referenceFile: file,
                             camera: camera,
+                            destinationRoot: destinationRoot,
                             settings: settings,
                             session: session,
                             manifestScheduler: manifestScheduler,
@@ -172,6 +192,7 @@ final class BackupEngine: @unchecked Sendable {
         rawPath: String,
         referenceFile: Insta360CameraFile,
         camera: CameraProfile,
+        destinationRoot: URL,
         settings: AppSettings,
         session: CameraSession,
         manifestScheduler: SyncManifestFlushScheduler,
@@ -192,7 +213,12 @@ final class BackupEngine: @unchecked Sendable {
             storage: "sd",
             captureTime: referenceFile.captureTime
         )
-        let proposed = BackupPathResolver.destinationURL(for: rawFile, camera: camera, settings: settings)
+        let proposed = BackupPathResolver.destinationURL(
+            for: rawFile,
+            camera: camera,
+            destinationRoot: destinationRoot,
+            settings: settings
+        )
         let resolution = BackupPathResolver.resolveDuplicateDestination(
             proposed: proposed,
             behavior: settings.duplicateFileBehavior,

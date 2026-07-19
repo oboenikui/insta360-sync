@@ -210,7 +210,6 @@ enum HTTPServerError: Error {
 }
 
 struct PublicSettingsDTO: Encodable {
-    var destinationRoot: String
     var folderStructureMode: String
     var vapidPublicKey: String
     var vapidSubject: String
@@ -223,6 +222,7 @@ struct CameraDTO: Encodable {
     var displayName: String
     var ssid: String
     var isEnabled: Bool
+    var destinationRoot: String
 }
 
 struct PushSubscribeRequest: Decodable {
