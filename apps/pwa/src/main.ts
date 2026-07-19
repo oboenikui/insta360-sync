@@ -55,10 +55,15 @@ type BackupStatus = {
 };
 
 type PublicSettings = {
-  destinationRoot: string;
   folderStructureMode: string;
   vapidPublicKey: string;
-  cameras: Array<{ id: string; displayName: string; ssid: string; isEnabled: boolean }>;
+  cameras: Array<{
+    id: string;
+    displayName: string;
+    ssid: string;
+    isEnabled: boolean;
+    destinationRoot: string;
+  }>;
 };
 
 type View = "main" | "settings";

@@ -161,6 +161,20 @@ final class SyncCore {
 
     func handleDetectedCamera(_ camera: CameraProfile) async {
         guard case .running = appStatus else { return }
+        guard camera.hasDestination else {
+            AppLogger.shared.warning(
+                "Skipping detection for \(camera.displayName): destination is not configured"
+            )
+            return
+        }
+        // バックアップ中はカメラ AP を占有するため、他デバイス含む全端末へ検知 Push を送らない。
+        if pendingStore.hasActiveBackup {
+            AppLogger.shared.info(
+                "Skipping detection push while backup is in progress (\(camera.displayName))",
+                category: .push
+            )
+            return
+        }
         guard let pending = pendingStore.createPending(for: camera) else { return }
         AppLogger.shared.info(
             "Camera detected, sending push for \(camera.displayName) (\(settings.pushSubscriptions.count) subscriptions)",
@@ -187,6 +201,25 @@ final class SyncCore {
 
     func runManualBackup(cameraID: UUID) async {
         guard let camera = settings.camera(for: cameraID) else { return }
+        guard camera.hasDestination else {
+            AppLogger.shared.warning(
+                "Manual backup skipped for \(camera.displayName): destination is not configured"
+            )
+            history.insert(
+                BackupHistoryEntry(
+                    id: UUID(),
+                    cameraName: camera.displayName,
+                    startedAt: Date(),
+                    finishedAt: Date(),
+                    copiedCount: 0,
+                    skippedCount: 0,
+                    failedCount: 0,
+                    message: BackupEngineError.destinationNotConfigured.localizedDescription
+                ),
+                at: 0
+            )
+            return
+        }
         let pending = PendingBackup(
             id: UUID(),
             cameraID: camera.id,

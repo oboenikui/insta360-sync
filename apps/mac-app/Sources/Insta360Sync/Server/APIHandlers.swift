@@ -21,7 +21,6 @@ extension SyncCore {
         if request.method == "GET" && path == "/api/settings" {
             guard authorize(request) else { return HTTPResponse.unauthorized() }
             let dto = PublicSettingsDTO(
-                destinationRoot: settings.destinationRoot.path,
                 folderStructureMode: settings.folderStructureMode.rawValue,
                 vapidPublicKey: settings.vapidPublicKey,
                 vapidSubject: settings.vapidSubject,
@@ -29,7 +28,13 @@ extension SyncCore {
                     ? "Apple は .local / localhost を含む VAPID subject を拒否します（403 BadJwtToken）"
                     : nil,
                 cameras: settings.cameras.map {
-                    CameraDTO(id: $0.id, displayName: $0.displayName, ssid: $0.ssid, isEnabled: $0.isEnabled)
+                    CameraDTO(
+                        id: $0.id,
+                        displayName: $0.displayName,
+                        ssid: $0.ssid,
+                        isEnabled: $0.isEnabled,
+                        destinationRoot: $0.destinationRootPath
+                    )
                 }
             )
             return HTTPResponse.json(dto)

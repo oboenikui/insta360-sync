@@ -6,11 +6,18 @@ final class PendingBackupStore {
     private var recentlyNotified: [UUID: Date] = [:]
     private let cooldown: TimeInterval = 300
 
+    /// 承認済みまたは実行中のバックアップがあるか（カメラ AP 占有中）。
+    var hasActiveBackup: Bool {
+        pending.contains { $0.status == .approved || $0.status == .running }
+    }
+
+    /// 新規の検知 pending を作成する。既存の未完了アイテムがある場合やクールダウン中は `nil`。
     func createPending(for camera: CameraProfile) -> PendingBackup? {
-        if let existing = pending.first(where: {
+        if pending.contains(where: {
             $0.cameraID == camera.id && ($0.status == .pending || $0.status == .approved || $0.status == .running)
         }) {
-            return existing
+            // 既存を返すと呼び出し側が再通知してしまうため、新規作成時のみ非 nil を返す。
+            return nil
         }
         if let last = recentlyNotified[camera.id], Date().timeIntervalSince(last) < cooldown {
             return nil

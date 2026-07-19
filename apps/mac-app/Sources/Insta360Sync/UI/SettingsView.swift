@@ -7,7 +7,8 @@ struct SettingsView: View {
 
     @State private var newDisplayName = ""
     @State private var newSSID = ""
-    @State private var newPassword = Insta360Defaults.defaultWiFiPassword
+    @State private var newPassword = ""
+    @State private var newDestinationRootPath = ""
     @State private var pushTestMessage = ""
     @State private var isSendingTestPush = false
 
@@ -15,10 +16,6 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Text(settings.destinationRoot.path)
-                        .font(.caption)
-                        .textSelection(.enabled)
-                    Button("保存先フォルダを選択…") { chooseDestination() }
                     Picker("フォルダ構造", selection: $settings.folderStructureMode) {
                         ForEach(FolderStructureMode.allCases) { mode in
                             Text(mode.label).tag(mode)
@@ -30,36 +27,21 @@ struct SettingsView: View {
                         }
                     }
                 } header: {
-                    Text("保存先")
+                    Text("バックアップ")
                 } footer: {
-                    Text("保存先に同名ファイルがある場合の動作です。")
+                    Text("保存先はカメラごとに指定します。同名ファイルがある場合の動作です。")
                 }
 
                 Section("カメラ") {
-                    ForEach($settings.cameras) { $camera in
-                        VStack(alignment: .leading, spacing: 6) {
-                            TextField("表示名", text: $camera.displayName)
-                            TextField("SSID", text: $camera.ssid)
-                            PasswordField(title: "Wi-Fi パスワード", text: $camera.wifiPassword)
-                            Toggle("有効", isOn: $camera.isEnabled)
-                            HStack {
-                                Button("今すぐバックアップ") {
-                                    Task { await core.runManualBackup(cameraID: camera.id) }
-                                }
-                                Spacer()
-                                Button("削除", role: .destructive) {
-                                    settings.cameras.removeAll { $0.id == camera.id }
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
+                    ForEach(settings.cameras) { camera in
+                        cameraEditor(camera: binding(for: camera.id))
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
 
-                    TextField("表示名", text: $newDisplayName)
-                    TextField("SSID", text: $newSSID)
-                    PasswordField(title: "Wi-Fi パスワード", text: $newPassword)
-                    Button("カメラを追加") { addCamera() }
-                        .disabled(newSSID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    cameraAddForm()
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 }
 
                 Section {
@@ -173,33 +155,153 @@ struct SettingsView: View {
         }
     }
 
+    private var canAddCamera: Bool {
+        let ssid = newSSID.trimmingCharacters(in: .whitespaces)
+        let destination = newDestinationRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !ssid.isEmpty && !destination.isEmpty
+    }
+
+    private func binding(for cameraID: UUID) -> Binding<CameraProfile> {
+        Binding(
+            get: {
+                settings.cameras.first(where: { $0.id == cameraID })
+                    ?? CameraProfile(displayName: "", ssid: "", destinationRootPath: "")
+            },
+            set: { updated in
+                guard let index = settings.cameras.firstIndex(where: { $0.id == cameraID }) else { return }
+                settings.cameras[index] = updated
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func cameraEditor(camera: Binding<CameraProfile>) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            labeledTextField("表示名", text: camera.displayName)
+            labeledTextField("SSID", text: camera.ssid)
+            labeledPasswordField("Wi-Fi パスワード", text: camera.wifiPassword)
+            destinationRow(
+                path: camera.wrappedValue.destinationRootPath,
+                isRequiredMissing: !camera.wrappedValue.hasDestination
+            ) {
+                if let url = chooseDestinationFolder() {
+                    camera.wrappedValue.destinationRootPath = url.path
+                }
+            }
+            Toggle("有効", isOn: camera.isEnabled)
+            HStack {
+                Button("今すぐバックアップ") {
+                    Task { await core.runManualBackup(cameraID: camera.wrappedValue.id) }
+                }
+                .disabled(!camera.wrappedValue.hasDestination)
+                Spacer()
+                Button("削除", role: .destructive) {
+                    settings.cameras.removeAll { $0.id == camera.wrappedValue.id }
+                }
+            }
+            Divider()
+                .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func cameraAddForm() -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("新しいカメラ")
+                .font(.headline)
+            labeledTextField("表示名", text: $newDisplayName)
+            labeledTextField("SSID", text: $newSSID)
+            labeledPasswordField("Wi-Fi パスワード", text: $newPassword)
+            destinationRow(
+                path: newDestinationRootPath,
+                isRequiredMissing: newDestinationRootPath
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty
+            ) {
+                if let url = chooseDestinationFolder() {
+                    newDestinationRootPath = url.path
+                }
+            }
+            Button("カメラを追加") { addCamera() }
+                .disabled(!canAddCamera)
+        }
+    }
+
+    private func labeledTextField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            BorderedTextField(title: title, text: text)
+        }
+    }
+
+    private func labeledPasswordField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            PasswordField(title: title, text: text)
+        }
+    }
+
+    @ViewBuilder
+    private func destinationRow(
+        path: String,
+        isRequiredMissing: Bool,
+        onChoose: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("保存先")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("未設定")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else {
+                Text(path)
+                    .font(.caption)
+                    .textSelection(.enabled)
+            }
+            Button("保存先フォルダを選択…", action: onChoose)
+            if isRequiredMissing {
+                Text("保存先の指定は必須です")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
     private func addCamera() {
         let name = newDisplayName.trimmingCharacters(in: .whitespaces)
         let ssid = newSSID.trimmingCharacters(in: .whitespaces)
-        guard !ssid.isEmpty else { return }
+        let destination = newDestinationRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ssid.isEmpty, !destination.isEmpty else { return }
         settings.cameras.append(
             CameraProfile(
                 displayName: name.isEmpty ? ssid : name,
                 ssid: ssid,
-                wifiPassword: newPassword
+                wifiPassword: newPassword,
+                destinationRootPath: destination
             )
         )
         newDisplayName = ""
         newSSID = ""
-        newPassword = Insta360Defaults.defaultWiFiPassword
+        newPassword = ""
+        newDestinationRootPath = ""
     }
 
-    private func chooseDestination() {
+    private func chooseDestinationFolder() -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "選択"
-        panel.message = "バックアップ先フォルダを選択するか、新しいフォルダを作成してください。"
-        if panel.runModal() == .OK, let url = panel.url {
-            settings.destinationRoot = url
-        }
+        panel.message = "このカメラのバックアップ先フォルダを選択するか、新しいフォルダを作成してください。"
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
     }
 
     private func sendTestPushFromMac() async {
