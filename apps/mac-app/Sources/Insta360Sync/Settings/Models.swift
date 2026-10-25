@@ -126,6 +126,8 @@ struct BackupProgress: Equatable, Codable, Sendable {
     var cameraName: String
     var completed: Int
     var total: Int
+    /// 事前フィルタで除外したファイル数（同期済み・ローカル既存・404 不可など）
+    var filteredCount: Int
     var currentFile: String?
     var phase: String
 }

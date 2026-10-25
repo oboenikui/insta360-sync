@@ -319,13 +319,38 @@ final class Insta360UCD2Client: @unchecked Sendable {
     }
 
     private static func loadResource(_ name: String, ext: String) -> Data? {
-        if let url = Bundle.module.url(forResource: name, withExtension: ext, subdirectory: "ucd2"),
-           let data = try? Data(contentsOf: url) {
-            return data
+        // Bundle.module は SPM リソースバンドルが無いと fatalError になる。
+        // .app では Contents/Resources/ucd2 を先に見る。
+        let candidates: [URL?] = [
+            Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "ucd2"),
+            bundledModuleURL(name: name, ext: ext),
+        ]
+        for case let url? in candidates {
+            if let data = try? Data(contentsOf: url) {
+                return data
+            }
         }
-        if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "ucd2"),
-           let data = try? Data(contentsOf: url) {
-            return data
+        return nil
+    }
+
+    /// `Bundle.module` を触らずに SPM リソースバンドルを探す。
+    /// 見つからないときにプロセスを落とさない。
+    private static func bundledModuleURL(name: String, ext: String) -> URL? {
+        let bundleName = "Insta360Sync_Insta360Sync.bundle"
+        var candidates: [URL] = []
+        if let override = ProcessInfo.processInfo.environment["PACKAGE_RESOURCE_BUNDLE_PATH"]
+            ?? ProcessInfo.processInfo.environment["PACKAGE_RESOURCE_BUNDLE_URL"] {
+            candidates.append(URL(fileURLWithPath: override))
+        }
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL.appendingPathComponent(bundleName))
+        }
+        candidates.append(Bundle.main.bundleURL.appendingPathComponent(bundleName))
+        for bundleURL in candidates {
+            guard let bundle = Bundle(url: bundleURL) else { continue }
+            if let url = bundle.url(forResource: name, withExtension: ext, subdirectory: "ucd2") {
+                return url
+            }
         }
         return nil
     }

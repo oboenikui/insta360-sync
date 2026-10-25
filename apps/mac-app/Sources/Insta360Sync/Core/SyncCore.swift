@@ -4,6 +4,11 @@ import Observation
 @MainActor
 @Observable
 final class SyncCore {
+    private enum HistoryDefaults {
+        static let key = "backupHistory"
+        static let maxEntries = 50
+    }
+
     let settings: AppSettings
     let pendingStore = PendingBackupStore()
 
@@ -29,6 +34,7 @@ final class SyncCore {
 
     init(settings: AppSettings) {
         self.settings = settings
+        self.history = Self.loadHistory()
     }
 
     func start() async {
@@ -61,9 +67,9 @@ final class SyncCore {
         wifiMonitor.start(
             interval: settings.scanIntervalSeconds,
             camerasProvider: { [settings] in settings.enabledCameras() },
-            onDetected: { [weak self] detected in
+            onScanResult: { [weak self] result in
                 Task { @MainActor [weak self] in
-                    await self?.handleDetectedCamera(detected.profile)
+                    await self?.handleScanResult(result)
                 }
             }
         )
@@ -159,6 +165,19 @@ final class SyncCore {
         AppLogger.shared.info("Removed \(removed) expired push subscription(s)", category: .push)
     }
 
+    private func handleScanResult(_ result: WiFiMonitor.ScanResult) async {
+        guard case .running = appStatus else { return }
+
+        // バックアップ中はカメラ AP 占有でスキャン結果が不安定になりうるため、承認待ちの掃除だけ行わない。
+        if !pendingStore.hasActiveBackup {
+            pendingStore.clearPending(forAbsentCameraIDs: Set(result.absent.map(\.id)))
+        }
+
+        for camera in result.visible {
+            await handleDetectedCamera(camera)
+        }
+    }
+
     func handleDetectedCamera(_ camera: CameraProfile) async {
         guard case .running = appStatus else { return }
         guard camera.hasDestination else {
@@ -205,7 +224,7 @@ final class SyncCore {
             AppLogger.shared.warning(
                 "Manual backup skipped for \(camera.displayName): destination is not configured"
             )
-            history.insert(
+            prependHistory(
                 BackupHistoryEntry(
                     id: UUID(),
                     cameraName: camera.displayName,
@@ -215,8 +234,7 @@ final class SyncCore {
                     skippedCount: 0,
                     failedCount: 0,
                     message: BackupEngineError.destinationNotConfigured.localizedDescription
-                ),
-                at: 0
+                )
             )
             return
         }
@@ -261,10 +279,12 @@ final class SyncCore {
 
         await wifiMonitor.finishCameraSession(previousSSID: previousSSID, cameraSSID: camera.ssid)
         currentProgress = nil
+        // 同期直後はカメラ AP がまだ見えることがあるため、検知 Push のクールダウンを延長する。
+        pendingStore.suppressDetection(for: camera.id)
 
         if let result {
             pendingStore.update(pendingID, status: .completed)
-            history.insert(
+            prependHistory(
                 BackupHistoryEntry(
                     id: UUID(),
                     cameraName: camera.displayName,
@@ -275,8 +295,7 @@ final class SyncCore {
                     failedCount: result.failedCount,
                     message: "protocol=\(result.protocolKind.rawValue)",
                     failures: result.failures
-                ),
-                at: 0
+                )
             )
             let finishResults = await webPush.notifyBackupFinished(
                 settings: backupSettings,
@@ -287,7 +306,7 @@ final class SyncCore {
             applyPushDeliveryResults(finishResults)
         } else {
             pendingStore.update(pendingID, status: .failed)
-            history.insert(
+            prependHistory(
                 BackupHistoryEntry(
                     id: UUID(),
                     cameraName: camera.displayName,
@@ -297,18 +316,39 @@ final class SyncCore {
                     skippedCount: 0,
                     failedCount: 0,
                     message: failureMessage
-                ),
-                at: 0
+                )
             )
         }
     }
 
+    private func prependHistory(_ entry: BackupHistoryEntry) {
+        history.insert(entry, at: 0)
+        if history.count > HistoryDefaults.maxEntries {
+            history = Array(history.prefix(HistoryDefaults.maxEntries))
+        }
+        Self.saveHistory(history)
+    }
+
+    private static func loadHistory() -> [BackupHistoryEntry] {
+        let defaults = Insta360UserDefaults.store()
+        guard let data = defaults.data(forKey: HistoryDefaults.key) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let decoded = try? decoder.decode([BackupHistoryEntry].self, from: data) else {
+            return []
+        }
+        return Array(decoded.prefix(HistoryDefaults.maxEntries))
+    }
+
+    private static func saveHistory(_ history: [BackupHistoryEntry]) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(history) else { return }
+        Insta360UserDefaults.store().set(data, forKey: HistoryDefaults.key)
+    }
+
     private static func resolveStaticRoot() -> URL {
         if let resource = Bundle.main.resourceURL?.appendingPathComponent("public", isDirectory: true),
-           FileManager.default.fileExists(atPath: resource.appendingPathComponent("index.html").path) {
-            return resource
-        }
-        if let resource = Bundle.module.resourceURL?.appendingPathComponent("public", isDirectory: true),
            FileManager.default.fileExists(atPath: resource.appendingPathComponent("index.html").path) {
             return resource
         }
@@ -317,7 +357,6 @@ final class SyncCore {
         if FileManager.default.fileExists(atPath: devPath.appendingPathComponent("index.html").path) {
             return devPath
         }
-        return Bundle.module.resourceURL?.appendingPathComponent("public", isDirectory: true)
-            ?? cwd.appendingPathComponent("Resources/public")
+        return cwd.appendingPathComponent("Resources/public")
     }
 }
