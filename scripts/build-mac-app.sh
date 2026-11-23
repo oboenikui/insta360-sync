@@ -26,5 +26,16 @@ rm -rf "$APP_BUNDLE/Contents/Resources/ucd2"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/public" "$APP_BUNDLE/Contents/Resources/public"
 cp -R "$MAC_APP/Sources/Insta360Sync/Resources/ucd2" "$APP_BUNDLE/Contents/Resources/ucd2"
 
+# Bundle.module は Contents/Resources/Insta360Sync_Insta360Sync.bundle が無いと
+# fatalError する。swift run では SPM がパスを渡すが、.app 起動では同梱が必要。
+RESOURCE_BUNDLE_NAME="${APP_NAME}_${APP_NAME}.bundle"
+RESOURCE_BUNDLE="$BUILD_DIR/$RESOURCE_BUNDLE_NAME"
+if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
+  echo "Resource bundle not found: $RESOURCE_BUNDLE" >&2
+  exit 1
+fi
+rm -rf "$APP_BUNDLE/Contents/Resources/$RESOURCE_BUNDLE_NAME"
+cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/$RESOURCE_BUNDLE_NAME"
+
 echo "Built $APP_BUNDLE"
 echo "For stable TCC permissions (Location), run: make mac-app-signed"

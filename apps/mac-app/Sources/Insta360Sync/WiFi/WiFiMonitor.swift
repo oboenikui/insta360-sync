@@ -2,22 +2,25 @@ import CoreWLAN
 import Foundation
 
 final class WiFiMonitor: @unchecked Sendable {
-    struct DetectedCamera: Sendable {
-        var profile: CameraProfile
+    struct ScanResult: Sendable {
+        /// スキャン成功かつ SSID が見つかったカメラ
+        var visible: [CameraProfile]
+        /// スキャン成功かつ SSID が見つからなかったカメラ（失敗は含めない）
+        var absent: [CameraProfile]
     }
 
     private static let rememberedNetworkKey = "insta360.lastNonCameraSSID"
 
     private let client = CWWiFiClient.shared()
     private var scanTask: Task<Void, Never>?
-    private var onDetected: (@Sendable (DetectedCamera) -> Void)?
+    private var onScanResult: (@Sendable (ScanResult) -> Void)?
 
     func start(
         interval: TimeInterval,
         camerasProvider: @MainActor @escaping () -> [CameraProfile],
-        onDetected: @escaping @Sendable (DetectedCamera) -> Void
+        onScanResult: @escaping @Sendable (ScanResult) -> Void
     ) {
-        self.onDetected = onDetected
+        self.onScanResult = onScanResult
         scanTask?.cancel()
         scanTask = Task { [weak self] in
             guard let self else { return }
@@ -121,16 +124,24 @@ final class WiFiMonitor: @unchecked Sendable {
             rememberNonCameraNetwork(ssid)
         }
 
+        var visible: [CameraProfile] = []
+        var absent: [CameraProfile] = []
+
         for camera in cameras where camera.isEnabled {
             do {
                 let networks = try interface.scanForNetworks(withSSID: Data(camera.ssid.utf8), includeHidden: true)
-                if !networks.isEmpty {
-                    onDetected?(DetectedCamera(profile: camera))
+                if networks.isEmpty {
+                    absent.append(camera)
+                } else {
+                    visible.append(camera)
                 }
             } catch {
+                // スキャン失敗は「不在」とみなさない（誤って承認待ちを消さない）
                 AppLogger.shared.debug("Scan failed for \(camera.ssid): \(error.localizedDescription)")
             }
         }
+
+        onScanResult?(ScanResult(visible: visible, absent: absent))
     }
 
     private func waitForCameraReachable(timeout: TimeInterval) async throws {

@@ -43,6 +43,12 @@ PWA のみ:
 make pwa
 ```
 
+署名済みアプリを `/Applications` にインストールします。すでに起動中なら置き換えたあと再起動します。
+
+```bash
+make install
+```
+
 ## 実行
 
 ```bash
@@ -78,6 +84,7 @@ insta360-sync/
 ├── scripts/
 │   ├── build-pwa.sh
 │   ├── build-mac-app.sh
+│   ├── install-mac-app.sh
 │   └── generate-protos.sh
 └── Makefile
 ```

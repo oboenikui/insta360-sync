@@ -40,6 +40,7 @@ final class BackupEngine: @unchecked Sendable {
                 cameraName: camera.displayName,
                 completed: 0,
                 total: 0,
+                filteredCount: 0,
                 currentFile: nil,
                 phase: "Listing files (\(session.kind.rawValue))"
             )
@@ -54,34 +55,82 @@ final class BackupEngine: @unchecked Sendable {
 
         let unavailablePaths = SyncManifestStore.unavailable404Paths(in: manifest)
 
-        let listedFiles = try await session.listAllFiles()
-            .filter { !unavailablePaths.contains($0.sourcePath) }
-        let files = listedFiles.map { file in
-            var updated = file
-            updated.isSynced = SyncManifestStore.isSynced(file, manifest: manifest)
-            return updated
+        let allListedFiles = try await session.listAllFiles()
+        let unavailableFiltered = allListedFiles.filter { unavailablePaths.contains($0.sourcePath) }.count
+        let listedFiles = allListedFiles.filter { !unavailablePaths.contains($0.sourcePath) }
+
+        progress(
+            BackupProgress(
+                cameraName: camera.displayName,
+                completed: 0,
+                total: 0,
+                filteredCount: unavailableFiltered,
+                currentFile: nil,
+                phase: "Filtering files..."
+            )
+        )
+
+        var skipped = 0
+        var filesToSync: [Insta360CameraFile] = []
+
+        for file in listedFiles {
+            var candidate = file
+            candidate.isSynced = SyncManifestStore.isSynced(file, manifest: manifest)
+            if candidate.isSynced {
+                skipped += 1
+                continue
+            }
+
+            let proposed = BackupPathResolver.destinationURL(
+                for: candidate,
+                camera: camera,
+                destinationRoot: destinationRoot,
+                settings: settings
+            )
+            let resolution = BackupPathResolver.resolveDuplicateDestination(
+                proposed: proposed,
+                behavior: settings.duplicateFileBehavior,
+                expectedSize: candidate.size
+            )
+
+            switch resolution {
+            case .skipAlreadyPresent:
+                await manifestScheduler.markSynced(candidate)
+                skipped += 1
+            case .download:
+                filesToSync.append(candidate)
+            }
         }
 
+        let filteredCount = unavailableFiltered + skipped
+        let totalToSync = filesToSync.count
+
+        progress(
+            BackupProgress(
+                cameraName: camera.displayName,
+                completed: 0,
+                total: totalToSync,
+                filteredCount: filteredCount,
+                currentFile: nil,
+                phase: totalToSync > 0 ? "Downloading" : "Completed"
+            )
+        )
+
         var copied = 0
-        var skipped = 0
         var failed = 0
         var failures: [BackupFailure] = []
 
-        for (index, file) in files.enumerated() {
+        for (index, file) in filesToSync.enumerated() {
             progress(
                 BackupProgress(
                     cameraName: camera.displayName,
                     completed: index,
-                    total: files.count,
+                    total: totalToSync,
+                    filteredCount: filteredCount,
                     currentFile: file.name,
                     phase: "Downloading"
                 )
             )
-
-            if file.isSynced {
-                skipped += 1
-                continue
-            }
 
             let proposed = BackupPathResolver.destinationURL(
                 for: file,
@@ -99,7 +148,6 @@ final class BackupEngine: @unchecked Sendable {
             case .skipAlreadyPresent:
                 await manifestScheduler.markSynced(file)
                 skipped += 1
-                continue
             case let .download(destination, overwrite):
                 if file.isInferredCompanion {
                     switch await downloader.probeRemoteFile(url: file.downloadURL) {
@@ -125,7 +173,7 @@ final class BackupEngine: @unchecked Sendable {
                     if file.storage == "sd",
                        file.name.lowercased().hasSuffix(".jpg"),
                        let rawPath = Insta360Paths.companionRawPath(for: file.sourcePath),
-                       !files.contains(where: { $0.sourcePath == rawPath }) {
+                       !allListedFiles.contains(where: { $0.sourcePath == rawPath }) {
                         try await downloadCompanionRaw(
                             rawPath: rawPath,
                             referenceFile: file,
@@ -160,8 +208,9 @@ final class BackupEngine: @unchecked Sendable {
         progress(
             BackupProgress(
                 cameraName: camera.displayName,
-                completed: files.count,
-                total: files.count,
+                completed: totalToSync,
+                total: totalToSync,
+                filteredCount: filteredCount,
                 currentFile: nil,
                 phase: "Completed"
             )
@@ -170,8 +219,9 @@ final class BackupEngine: @unchecked Sendable {
         progress(
             BackupProgress(
                 cameraName: camera.displayName,
-                completed: files.count,
-                total: files.count,
+                completed: totalToSync,
+                total: totalToSync,
+                filteredCount: filteredCount,
                 currentFile: nil,
                 phase: "Disconnecting"
             )

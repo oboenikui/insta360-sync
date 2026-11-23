@@ -46,6 +46,30 @@ final class PendingBackupStore {
 
     func addManualPending(_ item: PendingBackup) {
         pending.insert(item, at: 0)
+        recentlyNotified[item.cameraID] = Date()
+    }
+
+    /// 同期完了直後の再検知 Push を抑止するため、クールダウンを延長する。
+    func suppressDetection(for cameraID: UUID) {
+        recentlyNotified[cameraID] = Date()
+    }
+
+    /// Wi-Fi が検出されなくなったカメラの承認待ちを消し、再出現時に再検知できるようにする。
+    func clearPending(forAbsentCameraIDs ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let removedCameraIDs = Set(
+            pending
+                .filter { $0.status == .pending && ids.contains($0.cameraID) }
+                .map(\.cameraID)
+        )
+        guard !removedCameraIDs.isEmpty else { return }
+        pending.removeAll { $0.status == .pending && removedCameraIDs.contains($0.cameraID) }
+        for cameraID in removedCameraIDs {
+            recentlyNotified.removeValue(forKey: cameraID)
+        }
+        AppLogger.shared.info(
+            "Cleared \(removedCameraIDs.count) pending backup(s) for cameras no longer on Wi-Fi"
+        )
     }
 
     func pendingItems() -> [PendingBackup] {

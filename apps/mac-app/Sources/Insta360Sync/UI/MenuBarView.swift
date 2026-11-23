@@ -61,10 +61,19 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(progress.cameraName): \(progress.phase)")
                 .font(.caption)
+            if progress.filteredCount > 0 {
+                Text("フィルタ済み \(progress.filteredCount)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             if progress.total > 0 {
                 ProgressView(value: Double(progress.completed), total: Double(progress.total))
                 Text("\(progress.completed)/\(progress.total)")
                     .font(.caption2)
+            } else if progress.phase == "Filtering files..." || progress.phase.hasPrefix("Listing") {
+                Text("同期対象を計算中…")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             if let file = progress.currentFile {
                 Text(file)

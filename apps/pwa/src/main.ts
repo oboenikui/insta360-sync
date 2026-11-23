@@ -39,6 +39,7 @@ type BackupStatus = {
     cameraName: string;
     completed: number;
     total: number;
+    filteredCount: number;
     currentFile?: string;
     phase: string;
   };
@@ -46,6 +47,8 @@ type BackupStatus = {
   history: Array<{
     id: string;
     cameraName: string;
+    startedAt: string;
+    finishedAt?: string;
     copiedCount: number;
     skippedCount: number;
     failedCount: number;
@@ -626,11 +629,18 @@ function renderProgress(status: BackupStatus) {
     return;
   }
 
-  const { cameraName, phase, completed, total, currentFile } = status.progress;
+  const { cameraName, phase, completed, total, filteredCount, currentFile } = status.progress;
   const entries: Array<{ term: string; value: string; valueClassName?: string }> = [
     { term: "カメラ", value: cameraName },
     { term: "フェーズ", value: phase },
-    { term: "進捗", value: total > 0 ? `${completed} / ${total} (${Math.round((completed / total) * 100)}%)` : `${completed}` },
+    {
+      term: "進捗",
+      value:
+        total > 0
+          ? `${completed} / ${total} (${Math.round((completed / total) * 100)}%)`
+          : `${completed}`,
+    },
+    { term: "フィルタ済み", value: String(filteredCount ?? 0) },
   ];
   if (currentFile) {
     entries.push({ term: "ファイル", value: currentFile, valueClassName: "mono" });
@@ -662,9 +672,11 @@ function renderHistory(history: BackupStatus["history"]) {
 
   replaceChildren(
     container,
-    ...history.slice(0, 10).map((entry) => {
+    ...history.slice(0, 3).map((entry) => {
+      const when = formatDate(entry.finishedAt ?? entry.startedAt);
       const children: HTMLElement[] = [
         el("strong", { textContent: entry.cameraName }),
+        el("div", { className: "muted", textContent: when }),
         el("div", {
           className: "muted",
           textContent: `新規 ${entry.copiedCount} / スキップ ${entry.skippedCount} / 失敗 ${entry.failedCount}`,
